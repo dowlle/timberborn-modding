@@ -1,5 +1,5 @@
 using Bindito.Core;
-using Timberborn.SingletonSystem;
+using Timberborn.BottomBarSystem;
 
 namespace ArchipelagoIntegration
 {
@@ -12,7 +12,32 @@ namespace ArchipelagoIntegration
     {
         protected override void Configure()
         {
-            Bind<ApScienceHook>().AsSingleton();
+            Bind<ApItemReceiver>().AsSingleton();
+            Bind<ArchipelagoConnectPanel>().AsSingleton();
+            Bind<ArchipelagoSaveData>().AsSingleton();
+
+            // AP Shop (tiered location check panel)
+            Bind<ApShopPanel>().AsSingleton();
+            Bind<ApShopTool>().AsSingleton();
+            Bind<ApShopButton>().AsSingleton();
+            MultiBind<BottomBarModule>().ToProvider<ApBottomBarModuleProvider>().AsSingleton();
+        }
+
+        private class ApBottomBarModuleProvider : IProvider<BottomBarModule>
+        {
+            private readonly ApShopButton _apShopButton;
+
+            public ApBottomBarModuleProvider(ApShopButton apShopButton)
+            {
+                _apShopButton = apShopButton;
+            }
+
+            public BottomBarModule Get()
+            {
+                var builder = new BottomBarModule.Builder();
+                builder.AddLeftSectionElement(_apShopButton, 100);
+                return builder.Build();
+            }
         }
     }
 }

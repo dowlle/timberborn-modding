@@ -1,0 +1,19 @@
+<ui:UXML xmlns:ui="UnityEngine.UIElements" xsi="http://www.w3.org/2001/XMLSchema-instance" engine="UnityEngine.UIElements" editor="UnityEditor.UIElements" noNamespaceSchemaLocation="../../UIElementsSchema/UIElements.xsd" editor-extension-mode="False">
+    <ui:VisualElement name="ApShopWrapper" class="ap-shop__wrapper">
+        <Style src="/Assets/Mods/Archipelago/AssetBundles/Resources/UI/Styles/ArchipelagoShopStyle.uss" />
+
+        <!-- Header -->
+        <ui:VisualElement class="ap-shop__header">
+            <ui:Label text="AP Shop" class="ap-shop__title" />
+            <ui:Label name="ScienceLabel" text="Science: 0" class="ap-shop__science" />
+        </ui:VisualElement>
+
+        <!-- Scrollable tier list -->
+        <ui:ScrollView name="TierContainer" class="ap-shop__scroll">
+            <!-- Tiers are populated dynamically by ApShopPanel.cs -->
+        </ui:ScrollView>
+
+        <!-- Status bar -->
+        <ui:Label name="ShopStatus" text="Not connected" class="ap-shop__status" />
+    </ui:VisualElement>
+</ui:UXML>

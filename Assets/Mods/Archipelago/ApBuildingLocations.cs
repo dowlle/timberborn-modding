@@ -2,8 +2,11 @@ using System.Collections.Generic;
 
 namespace ArchipelagoIntegration
 {
+    public enum ApTier { Tier1 = 1, Tier2, Tier3, Tier4, Tier5 }
+
     /// <summary>
-    /// Maps Timberborn blueprint TemplateName values to Archipelago location names.
+    /// Maps Timberborn blueprint TemplateName values to Archipelago location names,
+    /// with tier assignments matching Rules.py for the AP Shop progression.
     /// Generated from the Folktails blueprint JSONs (ScienceCost > 0 only).
     /// </summary>
     internal static class ApBuildingLocations
@@ -139,8 +142,158 @@ namespace ArchipelagoIntegration
             { "ZiplineStation.Folktails", "Science: Zipline Station" },
         };
 
+        // -----------------------------------------------------------------
+        // Tier assignments — must match Rules.py TIER*_SCIENCE_LOCS exactly
+        // -----------------------------------------------------------------
+
+        private static readonly HashSet<string> Tier1Locations = new()
+        {
+            "Science: Forester", "Science: Mini Lodge", "Science: Medium Tank",
+            "Science: Levee", "Science: Vertical Power Shaft", "Science: Shower",
+            "Science: Medical Bed", "Science: Contemplation Spot", "Science: Stairs",
+            "Science: Platform", "Science: Builders' Hut", "Science: Lever",
+            "Science: Roof 1x1", "Science: Bench", "Science: Roof 1x2",
+            "Science: Lantern", "Science: Flow Sensor", "Science: Relay",
+        };
+
+        private static readonly HashSet<string> Tier2Locations = new()
+        {
+            "Science: Gear Workshop", "Science: Aquatic Farmhouse", "Science: Bakery",
+            "Science: Gristmill", "Science: Hammock", "Science: Roof 2x2",
+            "Science: Wind Turbine", "Science: Geothermal Engine", "Science: Floodgate",
+            "Science: Impermeable Floor", "Science: Double Lodge", "Science: Large Warehouse",
+            "Science: Badwater Pump", "Science: Fluid Dump", "Science: Double Floodgate",
+            "Science: Paper Mill", "Science: Lido", "Science: Suspension Bridge 1x1",
+            "Science: Double Platform", "Science: Gate", "Science: Triple Platform",
+            "Science: Suspension Bridge 2x1", "Science: Herbalist", "Science: Triple Lodge",
+            "Science: Hedge", "Science: Roof 2x3", "Science: Roof 3x2",
+            "Science: Stream Gauge", "Science: Wood Fence", "Science: Chronometer",
+            "Science: Depth Sensor", "Science: Population Counter", "Science: Scarecrow",
+            "Science: Weathervane", "Science: Resource Counter", "Science: Science Counter",
+            "Science: Weather Station",
+        };
+
+        private static readonly HashSet<string> Tier3Locations = new()
+        {
+            "Science: Scavenger Flag", "Science: Smelter", "Science: Printing Press",
+            "Science: Refinery", "Science: Bot Part Factory", "Science: Large Water Pump",
+            "Science: Aquifer Drill", "Science: Contamination Barrier",
+            "Science: Explosives Factory", "Science: Valve", "Science: Triple Floodgate",
+            "Science: Clutch", "Science: Gravity Battery", "Science: Agora",
+            "Science: Beehive", "Science: Tapper's Shack", "Science: Suspension Bridge 3x1",
+            "Science: Overhang 2x1", "Science: Spiral Stairs", "Science: Zipline Pylon",
+            "Science: Contamination Sensor", "Science: Indicator", "Science: Speaker",
+            "Science: Detonator", "Science: Overhang 3x1", "Science: Suspension Bridge 4x1",
+            "Science: Zipline Beam", "Science: Zipline Station", "Science: Power Meter",
+            "Science: Timer", "Science: Firework Launcher", "Science: Large Tank",
+            "Science: District Crossing", "Science: Carousel", "Science: Centrifuge",
+            "Science: Wood Workshop", "Science: Bulletin Pole", "Science: Beaver Statue",
+            "Science: Pole Banner", "Science: Square Banner",
+        };
+
+        private static readonly HashSet<string> Tier4Locations = new()
+        {
+            "Science: Bot Assembler", "Science: Observatory", "Science: Dynamite",
+            "Science: Double Dynamite", "Science: Terrain Block", "Science: Triple Dynamite",
+            "Science: Dirt Excavator", "Science: Tunnel", "Science: Large Wind Turbine",
+            "Science: Detailer", "Science: Dance Hall", "Science: Mud Pit",
+            "Science: Underground Pile", "Science: Mechanical Fluid Pump",
+            "Science: Badwater Dome", "Science: Metal Platform 3x3",
+            "Science: Overhang 4x1", "Science: Suspension Bridge 5x1",
+            "Science: Memory", "Science: Farmer Monument", "Science: Brazier of Bonding",
+            "Science: Metal Platform 5x5", "Science: Overhang 5x1",
+            "Science: Suspension Bridge 6x1", "Science: Overhang 6x1",
+            "Science: Earth Recultivator",
+        };
+
+        private static readonly HashSet<string> Tier5Locations = new()
+        {
+            "Science: Mine", "Science: Badwater Rig", "Science: Fountain of Joy",
+            "Science: HTTP Lever", "Science: HTTP Adapter",
+        };
+
+        // -----------------------------------------------------------------
+        // Tier gate predicates — check received AP items
+        // Mirrors Rules.py tier helpers: _tier1 through _tier5
+        // -----------------------------------------------------------------
+
+        public static ApTier GetTier(string locationName)
+        {
+            if (Tier1Locations.Contains(locationName)) return ApTier.Tier1;
+            if (Tier2Locations.Contains(locationName)) return ApTier.Tier2;
+            if (Tier3Locations.Contains(locationName)) return ApTier.Tier3;
+            if (Tier4Locations.Contains(locationName)) return ApTier.Tier4;
+            if (Tier5Locations.Contains(locationName)) return ApTier.Tier5;
+            return ApTier.Tier1; // fallback
+        }
+
+        /// <summary>
+        /// Returns true if the given tier is accessible based on received AP items.
+        /// Mirrors the resource-chain predicates in Rules.py.
+        /// </summary>
+        public static bool IsTierUnlocked(ApTier tier, HashSet<string> receivedItems)
+        {
+            switch (tier)
+            {
+                case ApTier.Tier1:
+                    return true;
+                case ApTier.Tier2:
+                    return receivedItems.Contains("Blueprint: Gear Workshop");
+                case ApTier.Tier3:
+                    return IsTierUnlocked(ApTier.Tier2, receivedItems)
+                        && receivedItems.Contains("Blueprint: Scavenger Flag")
+                        && receivedItems.Contains("Blueprint: Smelter");
+                case ApTier.Tier4:
+                    return IsTierUnlocked(ApTier.Tier3, receivedItems)
+                        && receivedItems.Contains("Blueprint: Tapper's Shack")
+                        && receivedItems.Contains("Blueprint: Wood Workshop");
+                case ApTier.Tier5:
+                    return IsTierUnlocked(ApTier.Tier4, receivedItems)
+                        && receivedItems.Contains("Blueprint: Bot Part Factory")
+                        && receivedItems.Contains("Blueprint: Bot Assembler");
+                default:
+                    return false;
+            }
+        }
+
+        public static string GetTierRequirements(ApTier tier)
+        {
+            switch (tier)
+            {
+                case ApTier.Tier1: return "Always available";
+                case ApTier.Tier2: return "Requires: Gear Workshop";
+                case ApTier.Tier3: return "Requires: Scavenger Flag, Smelter";
+                case ApTier.Tier4: return "Requires: Tapper's Shack, Wood Workshop";
+                case ApTier.Tier5: return "Requires: Bot Part Factory, Bot Assembler";
+                default: return "";
+            }
+        }
+
+        // -----------------------------------------------------------------
+        // Lookups
+        // -----------------------------------------------------------------
+
+        private static Dictionary<string, string> _itemNameToTemplate;
+
         public static bool TryGetLocationName(string templateName, out string locationName)
             => TemplateToLocation.TryGetValue(templateName, out locationName);
+
+        /// <summary>
+        /// Reverse lookup: AP item name ("Blueprint: Forester") → template name ("Forester.Folktails").
+        /// </summary>
+        public static bool TryGetTemplateName(string itemName, out string templateName)
+        {
+            if (_itemNameToTemplate == null)
+            {
+                _itemNameToTemplate = new Dictionary<string, string>();
+                foreach (var kvp in TemplateToLocation)
+                {
+                    var buildingName = kvp.Value.Replace("Science: ", "");
+                    _itemNameToTemplate[$"Blueprint: {buildingName}"] = kvp.Key;
+                }
+            }
+            return _itemNameToTemplate.TryGetValue(itemName, out templateName);
+        }
 
         public static IEnumerable<KeyValuePair<string, string>> AllEntries
             => TemplateToLocation;
