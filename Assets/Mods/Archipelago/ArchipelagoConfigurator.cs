@@ -13,6 +13,7 @@ namespace ArchipelagoIntegration
         protected override void Configure()
         {
             Bind<ApItemReceiver>().AsSingleton();
+            Bind<BuildingUnlockToolRefresher>().AsSingleton();
             Bind<ArchipelagoConnectPanel>().AsSingleton();
             Bind<ArchipelagoSaveData>().AsSingleton();
 
