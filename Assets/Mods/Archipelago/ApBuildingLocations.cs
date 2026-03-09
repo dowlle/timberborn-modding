@@ -49,6 +49,7 @@ namespace ArchipelagoIntegration
             { "EarthRecultivator.Folktails", "Science: Earth Recultivator" },
             { "ExplosivesFactory.Folktails", "Science: Explosives Factory" },
             { "FarmerMonument.Folktails", "Science: Farmer Monument" },
+            { "FillValve.Folktails", "Science: Fill Valve" },
             { "FireworkLauncher.Folktails", "Science: Firework Launcher" },
             { "Floodgate.Folktails", "Science: Floodgate" },
             { "FlowSensor.Folktails", "Science: Flow Sensor" },
@@ -158,7 +159,7 @@ namespace ArchipelagoIntegration
 
         private static readonly HashSet<string> Tier2Locations = new()
         {
-            "Science: Gear Workshop", "Science: Aquatic Farmhouse", "Science: Bakery",
+            "Science: Gear Workshop", "Science: Fill Valve", "Science: Aquatic Farmhouse", "Science: Bakery",
             "Science: Gristmill", "Science: Hammock", "Science: Roof 2x2",
             "Science: Wind Turbine", "Science: Geothermal Engine", "Science: Floodgate",
             "Science: Impermeable Floor", "Science: Double Lodge", "Science: Large Warehouse",
