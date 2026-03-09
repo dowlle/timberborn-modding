@@ -83,6 +83,7 @@ namespace ArchipelagoIntegration
             {
                 _saveData.SkipsAvailable++;
                 Debug.Log($"[Archipelago] Received Skip item (total: {_saveData.SkipsAvailable}) from {item.SenderName}");
+                ArchipelagoManager.PostLogMessage($"Received Skip from {item.SenderName} (total: {_saveData.SkipsAvailable})");
                 return;
             }
 
@@ -93,6 +94,7 @@ namespace ArchipelagoIntegration
                 {
                     _buildingUnlockingService.UnlockIgnoringCost(spec);
                     Debug.Log($"[Archipelago] Unlocked building: {item.ItemName} (from {item.SenderName})");
+                    ArchipelagoManager.PostLogMessage($"Received {item.ItemName} from {item.SenderName}");
                 }
                 catch (Exception ex)
                 {
@@ -106,6 +108,7 @@ namespace ArchipelagoIntegration
             else
             {
                 Debug.Log($"[Archipelago] Received non-blueprint item: {item.ItemName} (from {item.SenderName})");
+                ArchipelagoManager.PostLogMessage($"Received {item.ItemName} from {item.SenderName}");
             }
         }
 

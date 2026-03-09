@@ -1,0 +1,10 @@
+<ui:UXML xmlns:ui="UnityEngine.UIElements">
+    <ui:VisualElement name="ApLogWrapper" class="ap-log__wrapper">
+        <Style src="/Assets/Mods/Archipelago/AssetBundles/Resources/UI/Styles/ArchipelagoEventLogStyle.uss" />
+        <ui:VisualElement class="ap-log__header">
+            <ui:Label text="AP Log" class="ap-log__title" />
+            <ui:Button name="LogToggle" text="&#x25BC;" class="ap-log__toggle" />
+        </ui:VisualElement>
+        <ui:ScrollView name="LogScrollView" class="ap-log__scroll" />
+    </ui:VisualElement>
+</ui:UXML>

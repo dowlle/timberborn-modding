@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using Archipelago.MultiClient.Net;
 using Archipelago.MultiClient.Net.Enums;
 using Archipelago.MultiClient.Net.Helpers;
+using Archipelago.MultiClient.Net.MessageLog.Messages;
 using Archipelago.MultiClient.Net.Models;
 using Archipelago.MultiClient.Net.Packets;
 using UnityEngine;
@@ -67,9 +69,13 @@ namespace ArchipelagoIntegration
         /// <summary>Fired on the main thread when the connection state changes.</summary>
         public static event Action<bool, string> OnConnectionChanged; // (connected, message)
 
+        /// <summary>Fired on the main thread for AP server messages and log events.</summary>
+        public static event Action<string> OnLogMessage;
+
         // ------------------------------------------------------------------ internals
         private static ArchipelagoSession _session;
         private static readonly ConcurrentQueue<ApItem> _pendingItems = new();
+        private static readonly ConcurrentQueue<string> _pendingMessages = new();
 
         // ------------------------------------------------------------------ connect / disconnect
 
@@ -85,6 +91,7 @@ namespace ArchipelagoIntegration
             _session = ArchipelagoSessionFactory.CreateSession(host, port);
             _session.Items.ItemReceived  += OnNetworkItemReceived;
             _session.Socket.SocketClosed += OnSocketClosed;
+            _session.MessageLog.OnMessageReceived += OnServerMessageReceived;
 
             var loginResult = _session.TryConnectAndLogin(
                 "Timberborn",
@@ -105,6 +112,7 @@ namespace ArchipelagoIntegration
 
                 Debug.Log($"[Archipelago] Connected to {host}:{port} as '{slotName}'. Seed: {CurrentSeed}");
                 Debug.Log($"[Archipelago] SlotData keys: {string.Join(", ", SlotData.Keys)}");
+                _pendingMessages.Enqueue($"Connected to {host}:{port} as '{slotName}'");
                 OnConnectionChanged?.Invoke(true, $"Connected as {slotName}");
             }
             else
@@ -125,6 +133,7 @@ namespace ArchipelagoIntegration
 
             _session.Items.ItemReceived  -= OnNetworkItemReceived;
             _session.Socket.SocketClosed -= OnSocketClosed;
+            _session.MessageLog.OnMessageReceived -= OnServerMessageReceived;
 
             try { _session.Socket.DisconnectAsync().Wait(1000); }
             catch { /* best-effort */ }
@@ -136,6 +145,7 @@ namespace ArchipelagoIntegration
             SlotData     = null;
 
             Debug.Log("[Archipelago] Disconnected.");
+            _pendingMessages.Enqueue("Disconnected");
             OnConnectionChanged?.Invoke(false, "Disconnected");
         }
 
@@ -167,6 +177,17 @@ namespace ArchipelagoIntegration
             Debug.Log("[Archipelago] Goal achieved — sent to server.");
         }
 
+        // ------------------------------------------------------------------ log messages
+
+        /// <summary>
+        /// Queue a message for the AP event log (main-thread safe).
+        /// Called from ApItemReceiver and other components to surface events to the player.
+        /// </summary>
+        public static void PostLogMessage(string message)
+        {
+            _pendingMessages.Enqueue(message);
+        }
+
         // ------------------------------------------------------------------ item queue (main thread)
 
         /// <summary>
@@ -175,6 +196,11 @@ namespace ArchipelagoIntegration
         /// </summary>
         internal static void DrainItemQueue()
         {
+            while (_pendingMessages.TryDequeue(out var msg))
+            {
+                OnLogMessage?.Invoke(msg);
+            }
+
             while (_pendingItems.TryDequeue(out var item))
             {
                 OnItemReceived?.Invoke(item);
@@ -198,6 +224,12 @@ namespace ArchipelagoIntegration
                 _pendingItems.Enqueue(new ApItem(info));
                 ProcessedItemIndex = index + 1;
             }
+        }
+
+        private static void OnServerMessageReceived(LogMessage message)
+        {
+            var text = string.Join("", message.Parts.Select(p => p.Text));
+            _pendingMessages.Enqueue(text);
         }
 
         private static void OnSocketClosed(string reason)

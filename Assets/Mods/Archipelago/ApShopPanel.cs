@@ -10,8 +10,9 @@ using UnityEngine.UIElements;
 namespace ArchipelagoIntegration
 {
     /// <summary>
-    /// The AP Shop panel — 4 abstract paths (A/B/C/D) with sequential
-    /// purchases, escalating prices, tier gates, and skip support.
+    /// The AP Shop panel — 4 abstract paths (A/B/C/D) displayed as compact cards.
+    /// Each card shows only the next purchasable item; when purchased the card
+    /// advances to the next slot.  Completed paths show a "Complete" indicator.
     /// UI is built when shop layout becomes available (from save or slot_data).
     /// </summary>
     public class ApShopPanel : ILoadableSingleton, IUnloadableSingleton
@@ -29,6 +30,7 @@ namespace ArchipelagoIntegration
 
         private VisualElement _branchContainer;
         private readonly Dictionary<string, List<BranchSlotEntry>> _pathSlots = new();
+        private readonly Dictionary<string, PathCard> _pathCards = new();
 
         public ApShopPanel(
             UILayout uiLayout,
@@ -121,7 +123,7 @@ namespace ArchipelagoIntegration
         }
 
         // =================================================================
-        // BRANCHING UI (4-column path layout)
+        // CARD-BASED UI (one item per path)
         // =================================================================
 
         private void BuildBranchingUI()
@@ -133,109 +135,88 @@ namespace ArchipelagoIntegration
 
             foreach (var (path, slots) in grouped)
             {
-                var column = new VisualElement();
-                column.AddToClassList("ap-shop__path-column");
-
-                var pathHeader = new Label($"Path {path}");
-                pathHeader.AddToClassList("ap-shop__path-header");
-                column.Add(pathHeader);
-
-                var slotScroll = new ScrollView();
-                slotScroll.AddToClassList("ap-shop__path-scroll");
-
+                // Build the full slot list for logic tracking
                 var slotEntries = new List<BranchSlotEntry>();
                 for (int i = 0; i < slots.Count; i++)
                 {
-                    var slot = slots[i];
-                    var entry = new BranchSlotEntry
+                    slotEntries.Add(new BranchSlotEntry
                     {
-                        Slot = slot,
+                        Slot = slots[i],
                         Index = i,
                         Path = path,
-                    };
-
-                    var row = CreateBranchRow(entry);
-                    entry.RowElement = row;
-                    slotScroll.Add(row);
-                    slotEntries.Add(entry);
+                    });
                 }
-
-                column.Add(slotScroll);
-                _branchContainer.Add(column);
                 _pathSlots[path] = slotEntries;
+
+                // Build the visual card for this path
+                var card = CreatePathCard(path, slots.Count);
+                _branchContainer.Add(card.Container);
+                _pathCards[path] = card;
             }
 
-            Debug.Log($"[Archipelago] Branching shop built: {_saveData.ShopLayout.Count} slots across {grouped.Count} paths.");
+            Debug.Log($"[Archipelago] Branching shop built: {_saveData.ShopLayout.Count} slots across {grouped.Count} paths (card view).");
         }
 
-        private VisualElement CreateBranchRow(BranchSlotEntry entry)
+        private PathCard CreatePathCard(string path, int totalSlots)
         {
-            var row = new VisualElement();
-            row.AddToClassList("ap-shop__branch-row");
+            var card = new PathCard { Path = path, TotalSlots = totalSlots };
 
-            var slotLabel = new Label($"{entry.Path}-{entry.Index + 1}");
-            slotLabel.AddToClassList("ap-shop__branch-label");
-            row.Add(slotLabel);
+            card.Container = new VisualElement();
+            card.Container.AddToClassList("ap-shop__path-card");
 
-            var priceLabel = new Label($"{entry.Slot.Price}");
-            priceLabel.AddToClassList("ap-shop__branch-price");
-            entry.PriceLabel = priceLabel;
-            row.Add(priceLabel);
+            // Header: path name
+            var header = new Label($"Path {path}");
+            header.AddToClassList("ap-shop__path-header");
+            card.Container.Add(header);
 
-            var tierLabel = new Label($"T{entry.Slot.Tier}");
-            tierLabel.AddToClassList("ap-shop__branch-tier");
-            entry.TierLabel = tierLabel;
-            row.Add(tierLabel);
+            // Progress: "3 / 31"
+            card.ProgressLabel = new Label("0 / " + totalSlots);
+            card.ProgressLabel.AddToClassList("ap-shop__card-progress");
+            card.Container.Add(card.ProgressLabel);
 
-            var checkBtn = new Button(() => OnBranchCheckClicked(entry)) { text = "Buy" };
-            checkBtn.AddToClassList("ap-shop__branch-button");
-            entry.CheckButton = checkBtn;
-            row.Add(checkBtn);
+            // Price: "150 SC"
+            card.PriceLabel = new Label("");
+            card.PriceLabel.AddToClassList("ap-shop__card-price");
+            card.Container.Add(card.PriceLabel);
 
-            var skipBtn = new Button(() => OnBranchSkipClicked(entry)) { text = "Skip" };
-            skipBtn.AddToClassList("ap-shop__branch-skip-button");
-            entry.SkipButton = skipBtn;
-            row.Add(skipBtn);
+            // Tier: "T1"
+            card.TierLabel = new Label("");
+            card.TierLabel.AddToClassList("ap-shop__card-tier");
+            card.Container.Add(card.TierLabel);
 
-            var checkedLabel = new Label("\u2713");
-            checkedLabel.AddToClassList("ap-shop__branch-checked");
-            checkedLabel.style.display = DisplayStyle.None;
-            entry.CheckedLabel = checkedLabel;
-            row.Add(checkedLabel);
+            // Status message (tier requirement or "Complete!")
+            card.StatusLabel = new Label("");
+            card.StatusLabel.AddToClassList("ap-shop__card-status");
+            card.StatusLabel.style.display = DisplayStyle.None;
+            card.Container.Add(card.StatusLabel);
 
-            return row;
+            // Buy button
+            card.BuyButton = new Button(() => OnCardBuyClicked(path)) { text = "Buy" };
+            card.BuyButton.AddToClassList("ap-shop__card-buy");
+            card.Container.Add(card.BuyButton);
+
+            // Skip button
+            card.SkipButton = new Button(() => OnCardSkipClicked(path)) { text = "Skip" };
+            card.SkipButton.AddToClassList("ap-shop__card-skip");
+            card.Container.Add(card.SkipButton);
+
+            return card;
         }
 
         // =================================================================
-        // Actions
+        // Slot helpers
         // =================================================================
 
-        private void OnBranchCheckClicked(BranchSlotEntry entry)
+        private BranchSlotEntry GetNextEntry(string path)
         {
-            if (!CanPurchaseBranchSlot(entry)) return;
-
-            _scienceService.SubtractPoints(entry.Slot.Price);
-            ArchipelagoManager.SendLocationCheck(entry.Slot.LocationId);
-            _saveData.CheckedLocations.Add(entry.Slot.LocationId.ToString());
-
-            Debug.Log($"[Archipelago] Branch check: {entry.Path}-{entry.Index + 1} " +
-                      $"(loc={entry.Slot.LocationId}, cost={entry.Slot.Price})");
-            RefreshAll();
+            if (!_pathSlots.TryGetValue(path, out var entries)) return null;
+            return entries.FirstOrDefault(e => !IsBranchSlotChecked(e));
         }
 
-        private void OnBranchSkipClicked(BranchSlotEntry entry)
+        private int GetCheckedCount(string path)
         {
-            if (_saveData.SkipsAvailable <= 0) return;
-            if (!IsBranchSlotAvailable(entry)) return;
-            if (IsBranchSlotChecked(entry)) return;
-
-            _saveData.SkipsAvailable--;
-            ArchipelagoManager.SendLocationCheck(entry.Slot.LocationId);
-            _saveData.CheckedLocations.Add(entry.Slot.LocationId.ToString());
-
-            Debug.Log($"[Archipelago] Branch skip: {entry.Path}-{entry.Index + 1} " +
-                      $"(loc={entry.Slot.LocationId}, skips remaining={_saveData.SkipsAvailable})");
-            RefreshAll();
+            if (!_pathSlots.TryGetValue(path, out var entries)) return 0;
+            return entries.Count(e => IsBranchSlotChecked(e));
         }
 
         private bool IsBranchSlotChecked(BranchSlotEntry entry)
@@ -251,8 +232,7 @@ namespace ArchipelagoIntegration
             if (entry.Index == 0)
                 return true;
 
-            var pathEntries = _pathSlots[entry.Path];
-            var prev = pathEntries[entry.Index - 1];
+            var prev = _pathSlots[entry.Path][entry.Index - 1];
             return IsBranchSlotChecked(prev);
         }
 
@@ -263,6 +243,52 @@ namespace ArchipelagoIntegration
             if (!IsBranchSlotAvailable(entry)) return false;
             if (_scienceService.SciencePoints < entry.Slot.Price) return false;
             return true;
+        }
+
+        private static string GetTierRequirementText(int tier)
+        {
+            switch (tier)
+            {
+                case 2: return "Requires: Gear Workshop";
+                case 3: return "Requires: Scavenger Flag + Smelter";
+                case 4: return "Requires: Tapper's Shack + Wood Workshop";
+                case 5: return "Requires: Bot Part Factory + Bot Assembler";
+                default: return "";
+            }
+        }
+
+        // =================================================================
+        // Actions
+        // =================================================================
+
+        private void OnCardBuyClicked(string path)
+        {
+            var entry = GetNextEntry(path);
+            if (entry == null || !CanPurchaseBranchSlot(entry)) return;
+
+            _scienceService.SubtractPoints(entry.Slot.Price);
+            ArchipelagoManager.SendLocationCheck(entry.Slot.LocationId);
+            _saveData.CheckedLocations.Add(entry.Slot.LocationId.ToString());
+
+            Debug.Log($"[Archipelago] Shop buy: {entry.Path}-{entry.Index + 1} " +
+                      $"(loc={entry.Slot.LocationId}, cost={entry.Slot.Price})");
+            RefreshAll();
+        }
+
+        private void OnCardSkipClicked(string path)
+        {
+            var entry = GetNextEntry(path);
+            if (entry == null) return;
+            if (_saveData.SkipsAvailable <= 0) return;
+            if (!IsBranchSlotAvailable(entry)) return;
+
+            _saveData.SkipsAvailable--;
+            ArchipelagoManager.SendLocationCheck(entry.Slot.LocationId);
+            _saveData.CheckedLocations.Add(entry.Slot.LocationId.ToString());
+
+            Debug.Log($"[Archipelago] Shop skip: {entry.Path}-{entry.Index + 1} " +
+                      $"(loc={entry.Slot.LocationId}, skips remaining={_saveData.SkipsAvailable})");
+            RefreshAll();
         }
 
         // =================================================================
@@ -276,39 +302,66 @@ namespace ArchipelagoIntegration
                 ? $"Connected as {ArchipelagoManager.CurrentSlot}"
                 : "Not connected";
 
-            if (_pathSlots.Count == 0) return;
+            if (_pathCards.Count == 0) return;
 
             if (_skipsLabel != null)
                 _skipsLabel.text = $"Skips: {_saveData.SkipsAvailable}";
 
-            foreach (var (path, entries) in _pathSlots)
+            bool connected = ArchipelagoManager.IsConnected;
+
+            foreach (var (path, card) in _pathCards)
             {
-                foreach (var entry in entries)
+                int checkedCount = GetCheckedCount(path);
+                card.ProgressLabel.text = $"{checkedCount} / {card.TotalSlots}";
+
+                var next = GetNextEntry(path);
+
+                if (next == null)
                 {
-                    bool isChecked = IsBranchSlotChecked(entry);
-                    bool isAvailable = !isChecked && IsBranchSlotAvailable(entry);
-                    bool canAfford = _scienceService.SciencePoints >= entry.Slot.Price;
-                    bool connected = ArchipelagoManager.IsConnected;
-
-                    entry.RowElement.RemoveFromClassList("ap-shop__branch-row--checked");
-                    entry.RowElement.RemoveFromClassList("ap-shop__branch-row--available");
-                    entry.RowElement.RemoveFromClassList("ap-shop__branch-row--locked");
-
-                    if (isChecked)
-                        entry.RowElement.AddToClassList("ap-shop__branch-row--checked");
-                    else if (isAvailable)
-                        entry.RowElement.AddToClassList("ap-shop__branch-row--available");
-                    else
-                        entry.RowElement.AddToClassList("ap-shop__branch-row--locked");
-
-                    entry.CheckButton.style.display = isChecked ? DisplayStyle.None : DisplayStyle.Flex;
-                    entry.CheckButton.SetEnabled(isAvailable && canAfford && connected);
-
-                    entry.SkipButton.style.display = (isAvailable && !isChecked && _saveData.SkipsAvailable > 0)
+                    // Path complete
+                    card.PriceLabel.style.display = DisplayStyle.None;
+                    card.TierLabel.style.display = DisplayStyle.None;
+                    card.BuyButton.style.display = DisplayStyle.None;
+                    card.SkipButton.style.display = DisplayStyle.None;
+                    card.StatusLabel.text = "Complete!";
+                    card.StatusLabel.style.display = DisplayStyle.Flex;
+                    card.Container.RemoveFromClassList("ap-shop__path-card--available");
+                    card.Container.RemoveFromClassList("ap-shop__path-card--locked");
+                    card.Container.AddToClassList("ap-shop__path-card--complete");
+                }
+                else if (!IsBranchSlotAvailable(next))
+                {
+                    // Tier locked
+                    card.PriceLabel.text = $"{next.Slot.Price} SC";
+                    card.PriceLabel.style.display = DisplayStyle.Flex;
+                    card.TierLabel.text = $"T{next.Slot.Tier}";
+                    card.TierLabel.style.display = DisplayStyle.Flex;
+                    card.BuyButton.style.display = DisplayStyle.Flex;
+                    card.BuyButton.SetEnabled(false);
+                    card.SkipButton.style.display = DisplayStyle.None;
+                    card.StatusLabel.text = GetTierRequirementText(next.Slot.Tier);
+                    card.StatusLabel.style.display = DisplayStyle.Flex;
+                    card.Container.RemoveFromClassList("ap-shop__path-card--available");
+                    card.Container.RemoveFromClassList("ap-shop__path-card--complete");
+                    card.Container.AddToClassList("ap-shop__path-card--locked");
+                }
+                else
+                {
+                    // Available
+                    bool canAfford = _scienceService.SciencePoints >= next.Slot.Price;
+                    card.PriceLabel.text = $"{next.Slot.Price} SC";
+                    card.PriceLabel.style.display = DisplayStyle.Flex;
+                    card.TierLabel.text = $"T{next.Slot.Tier}";
+                    card.TierLabel.style.display = DisplayStyle.Flex;
+                    card.BuyButton.style.display = DisplayStyle.Flex;
+                    card.BuyButton.SetEnabled(canAfford && connected);
+                    card.SkipButton.style.display = (_saveData.SkipsAvailable > 0)
                         ? DisplayStyle.Flex : DisplayStyle.None;
-                    entry.SkipButton.SetEnabled(connected);
-
-                    entry.CheckedLabel.style.display = isChecked ? DisplayStyle.Flex : DisplayStyle.None;
+                    card.SkipButton.SetEnabled(connected);
+                    card.StatusLabel.style.display = DisplayStyle.None;
+                    card.Container.RemoveFromClassList("ap-shop__path-card--locked");
+                    card.Container.RemoveFromClassList("ap-shop__path-card--complete");
+                    card.Container.AddToClassList("ap-shop__path-card--available");
                 }
             }
         }
@@ -331,7 +384,7 @@ namespace ArchipelagoIntegration
         }
 
         // =================================================================
-        // Data model
+        // Data models
         // =================================================================
 
         private class BranchSlotEntry
@@ -339,12 +392,19 @@ namespace ArchipelagoIntegration
             public ShopSlot Slot;
             public int Index;
             public string Path;
-            public VisualElement RowElement;
+        }
+
+        private class PathCard
+        {
+            public string Path;
+            public int TotalSlots;
+            public VisualElement Container;
+            public Label ProgressLabel;
             public Label PriceLabel;
             public Label TierLabel;
-            public Button CheckButton;
+            public Label StatusLabel;
+            public Button BuyButton;
             public Button SkipButton;
-            public Label CheckedLabel;
         }
     }
 }

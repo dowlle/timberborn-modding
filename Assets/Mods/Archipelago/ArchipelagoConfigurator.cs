@@ -14,8 +14,10 @@ namespace ArchipelagoIntegration
         {
             Bind<ApItemReceiver>().AsSingleton();
             Bind<BuildingUnlockToolRefresher>().AsSingleton();
+            Bind<VanillaUnlockBlocker>().AsSingleton();
             Bind<ArchipelagoConnectPanel>().AsSingleton();
             Bind<ArchipelagoSaveData>().AsSingleton();
+            Bind<ApEventLogPanel>().AsSingleton();
 
             // AP Shop (tiered location check panel)
             Bind<ApShopPanel>().AsSingleton();

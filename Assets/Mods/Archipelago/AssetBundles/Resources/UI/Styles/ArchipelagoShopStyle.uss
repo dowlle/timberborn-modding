@@ -3,8 +3,7 @@
     bottom: 130px;
     left: 50%;
     translate: -50% 0;
-    width: 800px;
-    max-height: 600px;
+    width: 560px;
     padding: 10px;
     background-color: rgba(30, 25, 20, 0.92);
     border-width: 2px;
@@ -64,139 +63,131 @@
 }
 
 /* ============================================================
-   Branching — 4-column path layout
+   Card layout — 4 horizontal path cards
    ============================================================ */
 .ap-shop__branches {
     flex-direction: row;
     flex-grow: 1;
-    max-height: 600px;
+    justify-content: space-between;
 }
 
-.ap-shop__path-column {
+.ap-shop__path-card {
     flex-grow: 1;
     flex-basis: 0;
     margin: 0 3px;
+    padding: 6px;
     border-width: 1px;
     border-color: rgba(80, 70, 50, 0.5);
     border-radius: 4px;
     background-color: rgba(40, 35, 28, 0.5);
+    align-items: center;
 }
 
+.ap-shop__path-card--available {
+    background-color: rgba(70, 65, 45, 0.4);
+    border-color: rgba(120, 100, 70, 0.7);
+}
+
+.ap-shop__path-card--locked {
+    opacity: 0.55;
+}
+
+.ap-shop__path-card--complete {
+    background-color: rgba(60, 90, 50, 0.25);
+    border-color: rgba(100, 160, 70, 0.5);
+}
+
+/* Path header */
 .ap-shop__path-header {
     -unity-font-style: bold;
     font-size: 13px;
     color: rgb(220, 200, 160);
     -unity-text-align: middle-center;
-    padding: 4px;
-    background-color: rgba(60, 50, 35, 0.80);
-    border-top-left-radius: 3px;
-    border-top-right-radius: 3px;
+    padding: 3px 4px;
+    margin-bottom: 4px;
     border-bottom-width: 1px;
     border-bottom-color: rgb(80, 70, 50);
+    align-self: stretch;
 }
 
-.ap-shop__path-scroll {
-    flex-grow: 1;
-    max-height: 560px;
-}
-
-/* Branch slot row */
-.ap-shop__branch-row {
-    flex-direction: row;
-    align-items: center;
-    padding: 3px 4px;
-    border-bottom-width: 1px;
-    border-bottom-color: rgba(80, 70, 50, 0.2);
-    flex-wrap: wrap;
-}
-
-.ap-shop__branch-row:hover {
-    background-color: rgba(80, 70, 50, 0.25);
-}
-
-.ap-shop__branch-row--checked {
-    background-color: rgba(60, 90, 50, 0.2);
-}
-
-.ap-shop__branch-row--available {
-    background-color: rgba(70, 65, 45, 0.3);
-}
-
-.ap-shop__branch-row--locked {
-    opacity: 0.45;
-}
-
-.ap-shop__branch-label {
-    font-size: 12px;
-    color: rgb(200, 185, 150);
-    -unity-font-style: bold;
-    min-width: 32px;
-}
-
-.ap-shop__branch-price {
+/* Progress label */
+.ap-shop__card-progress {
     font-size: 11px;
-    color: rgb(180, 220, 120);
-    min-width: 36px;
-    -unity-text-align: middle-right;
-    margin-right: 2px;
-}
-
-.ap-shop__branch-tier {
-    font-size: 10px;
     color: rgb(160, 140, 100);
-    min-width: 18px;
-    margin-right: 2px;
+    -unity-text-align: middle-center;
+    margin-bottom: 6px;
 }
 
-.ap-shop__branch-button {
-    width: 34px;
-    height: 20px;
+/* Price display */
+.ap-shop__card-price {
+    font-size: 16px;
+    color: rgb(180, 220, 120);
+    -unity-font-style: bold;
+    -unity-text-align: middle-center;
+    margin-bottom: 2px;
+}
+
+/* Tier badge */
+.ap-shop__card-tier {
+    font-size: 11px;
+    color: rgb(160, 140, 100);
+    -unity-text-align: middle-center;
+    margin-bottom: 6px;
+}
+
+/* Status message (tier requirement or Complete) */
+.ap-shop__card-status {
     font-size: 10px;
+    color: rgb(180, 160, 110);
+    -unity-text-align: middle-center;
+    -unity-font-style: italic;
+    margin-bottom: 4px;
+    white-space: normal;
+}
+
+/* Buy button */
+.ap-shop__card-buy {
+    width: 70px;
+    height: 24px;
+    font-size: 12px;
     -unity-font-style: bold;
     background-color: rgb(80, 120, 60);
     border-color: rgb(100, 150, 70);
     border-radius: 3px;
     color: rgb(240, 240, 230);
+    margin-bottom: 3px;
 }
 
-.ap-shop__branch-button:hover {
+.ap-shop__card-buy:hover {
     background-color: rgb(100, 145, 75);
 }
 
-.ap-shop__branch-button:disabled {
+.ap-shop__card-buy:disabled {
     background-color: rgb(60, 55, 45);
     border-color: rgb(80, 70, 55);
     color: rgb(120, 110, 90);
 }
 
-.ap-shop__branch-skip-button {
-    width: 34px;
-    height: 20px;
-    font-size: 10px;
+/* Skip button */
+.ap-shop__card-skip {
+    width: 70px;
+    height: 22px;
+    font-size: 11px;
     -unity-font-style: bold;
     background-color: rgb(60, 80, 140);
     border-color: rgb(80, 100, 170);
     border-radius: 3px;
     color: rgb(240, 240, 230);
-    margin-left: 2px;
 }
 
-.ap-shop__branch-skip-button:hover {
+.ap-shop__card-skip:hover {
     background-color: rgb(75, 100, 170);
 }
 
-.ap-shop__branch-skip-button:disabled {
+.ap-shop__card-skip:disabled {
     background-color: rgb(55, 50, 45);
     border-color: rgb(70, 65, 55);
     color: rgb(120, 110, 90);
-}
-
-.ap-shop__branch-checked {
-    font-size: 11px;
-    color: rgb(120, 180, 80);
-    -unity-font-style: bold;
-    -unity-text-align: middle-center;
-    min-width: 20px;
 }
 
 /* ============================================================
