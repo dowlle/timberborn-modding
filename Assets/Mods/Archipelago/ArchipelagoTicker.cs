@@ -12,7 +12,10 @@ namespace ArchipelagoIntegration
         private void Update()
         {
             if (ArchipelagoManager.IsConnected)
+            {
                 ArchipelagoManager.DrainItemQueue();
+                ApMilestoneTracker.Instance?.CheckMilestones();
+            }
         }
     }
 }

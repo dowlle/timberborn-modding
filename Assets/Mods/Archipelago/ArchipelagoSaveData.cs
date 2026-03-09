@@ -41,9 +41,14 @@ namespace ArchipelagoIntegration
         private static readonly PropertyKey<string> ReceivedItemsKey = new("ReceivedItems");
         private static readonly PropertyKey<string> ShopLayoutKey = new("ShopLayout");
         private static readonly PropertyKey<int> SkipsAvailableKey = new("SkipsAvailable");
+        private static readonly PropertyKey<string> MilestonesKey = new("Milestones");
+        private static readonly PropertyKey<string> CheckedMilestonesKey = new("CheckedMilestones");
 
         /// <summary>Fired when ShopLayout becomes available (from save or slot_data).</summary>
         public static event Action OnShopLayoutAvailable;
+
+        /// <summary>Fired when milestone definitions become available (from save or slot_data).</summary>
+        public static event Action OnMilestonesAvailable;
 
         private readonly ISingletonLoader _singletonLoader;
 
@@ -72,6 +77,12 @@ namespace ArchipelagoIntegration
 
         /// <summary>Number of Skip items available to spend.</summary>
         public int SkipsAvailable { get; set; }
+
+        /// <summary>Milestone definitions from slot_data (persisted for offline use).</summary>
+        public List<MilestoneDefinition> Milestones { get; private set; }
+
+        /// <summary>AP location IDs of milestones already checked.</summary>
+        public HashSet<long> CheckedMilestoneIds { get; } = new();
 
         public ArchipelagoSaveData(ISingletonLoader singletonLoader)
         {
@@ -126,12 +137,32 @@ namespace ArchipelagoIntegration
                     ShopLayout = DeserializeShopLayout(raw);
             }
 
+            // Restore milestone definitions and checked state
+            if (loader.Has(MilestonesKey))
+            {
+                var raw = loader.Get(MilestonesKey);
+                if (!string.IsNullOrEmpty(raw))
+                    Milestones = DeserializeMilestones(raw);
+            }
+            if (loader.Has(CheckedMilestonesKey))
+            {
+                var raw = loader.Get(CheckedMilestonesKey);
+                if (!string.IsNullOrEmpty(raw))
+                    foreach (var id in raw.Split('|'))
+                        if (long.TryParse(id, out var lid))
+                            CheckedMilestoneIds.Add(lid);
+            }
+
             Debug.Log($"[Archipelago] Loaded save data: ProcessedItemIndex={ArchipelagoManager.ProcessedItemIndex}, " +
                       $"CheckedLocs={CheckedLocations.Count}, ReceivedItems={ReceivedItems.Count}, " +
-                      $"ShopSlots={ShopLayout?.Count ?? 0}, Skips={SkipsAvailable}");
+                      $"ShopSlots={ShopLayout?.Count ?? 0}, Skips={SkipsAvailable}, " +
+                      $"Milestones={Milestones?.Count ?? 0}, CheckedMilestones={CheckedMilestoneIds.Count}");
 
             if (ShopLayout != null && ShopLayout.Count > 0)
                 OnShopLayoutAvailable?.Invoke();
+
+            if (Milestones != null && Milestones.Count > 0)
+                OnMilestonesAvailable?.Invoke();
 
             // Auto-reconnect if we have saved connection data
             if (!string.IsNullOrEmpty(_savedHost) && !string.IsNullOrEmpty(_savedSlot))
@@ -147,10 +178,12 @@ namespace ArchipelagoIntegration
 
             Debug.Log($"[Archipelago] SaveData.OnConnectionChanged — ShopLayout null={ShopLayout == null}, count={ShopLayout?.Count ?? -1}");
 
+            var slotData = ArchipelagoManager.SlotData;
+
             // Parse shop layout from slot_data if we don't already have one
             if (ShopLayout == null || ShopLayout.Count == 0)
             {
-                LoadFromSlotData(ArchipelagoManager.SlotData);
+                LoadFromSlotData(slotData);
                 if (ShopLayout != null && ShopLayout.Count > 0)
                 {
                     Debug.Log($"[Archipelago] Firing OnShopLayoutAvailable ({ShopLayout.Count} slots)");
@@ -159,6 +192,20 @@ namespace ArchipelagoIntegration
                 else
                 {
                     Debug.LogWarning("[Archipelago] ShopLayout still empty after LoadFromSlotData");
+                }
+            }
+
+            // Parse milestone definitions from slot_data if we don't already have them
+            if ((Milestones == null || Milestones.Count == 0) && slotData != null)
+            {
+                if (slotData.TryGetValue("milestones", out var milestonesObj))
+                {
+                    Milestones = ApMilestoneTracker.ParseFromSlotData(milestonesObj);
+                    if (Milestones.Count > 0)
+                    {
+                        Debug.Log($"[Archipelago] Firing OnMilestonesAvailable ({Milestones.Count} milestones)");
+                        OnMilestonesAvailable?.Invoke();
+                    }
                 }
             }
         }
@@ -189,6 +236,12 @@ namespace ArchipelagoIntegration
             saver.Set(SkipsAvailableKey, SkipsAvailable);
             if (ShopLayout != null && ShopLayout.Count > 0)
                 saver.Set(ShopLayoutKey, SerializeShopLayout(ShopLayout));
+
+            // Persist milestones
+            if (Milestones != null && Milestones.Count > 0)
+                saver.Set(MilestonesKey, SerializeMilestones(Milestones));
+            if (CheckedMilestoneIds.Count > 0)
+                saver.Set(CheckedMilestonesKey, string.Join("|", CheckedMilestoneIds));
         }
 
         /// <summary>
@@ -285,6 +338,36 @@ namespace ArchipelagoIntegration
             }
 
             Debug.Log($"[Archipelago] Parsed {result.Count} shop slots from slot_data");
+            return result;
+        }
+
+        // -----------------------------------------------------------------
+        // Milestone serialization (compact format)
+        // Format per milestone: "Name,LocationId,Type,Threshold"
+        // Milestones separated by ";"
+        // -----------------------------------------------------------------
+
+        private static string SerializeMilestones(List<MilestoneDefinition> milestones)
+        {
+            return string.Join(";", milestones.Select(m =>
+                $"{m.Name},{m.LocationId},{m.Type},{m.Threshold}"));
+        }
+
+        private static List<MilestoneDefinition> DeserializeMilestones(string raw)
+        {
+            var result = new List<MilestoneDefinition>();
+            foreach (var entry in raw.Split(';'))
+            {
+                var parts = entry.Split(',');
+                if (parts.Length < 4) continue;
+                result.Add(new MilestoneDefinition
+                {
+                    Name = parts[0],
+                    LocationId = long.Parse(parts[1]),
+                    Type = parts[2],
+                    Threshold = int.Parse(parts[3]),
+                });
+            }
             return result;
         }
     }

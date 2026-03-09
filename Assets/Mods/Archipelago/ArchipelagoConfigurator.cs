@@ -19,6 +19,9 @@ namespace ArchipelagoIntegration
             Bind<ArchipelagoSaveData>().AsSingleton();
             Bind<ApEventLogPanel>().AsSingleton();
 
+            // Milestone tracking (population, wellbeing, survival, wonder)
+            Bind<ApMilestoneTracker>().AsSingleton();
+
             // AP Shop (tiered location check panel)
             Bind<ApShopPanel>().AsSingleton();
             Bind<ApShopTool>().AsSingleton();
