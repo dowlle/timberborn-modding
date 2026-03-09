@@ -6,12 +6,14 @@
         <ui:VisualElement class="ap-shop__header">
             <ui:Label text="AP Shop" class="ap-shop__title" />
             <ui:Label name="ScienceLabel" text="Science: 0" class="ap-shop__science" />
+            <ui:Label name="SkipsLabel" text="Skips: 0" class="ap-shop__skips" />
         </ui:VisualElement>
 
-        <!-- Scrollable tier list -->
-        <ui:ScrollView name="TierContainer" class="ap-shop__scroll">
-            <!-- Tiers are populated dynamically by ApShopPanel.cs -->
-        </ui:ScrollView>
+        <!-- Shop body — flat tiers or branching columns populated by ApShopPanel.cs -->
+        <ui:VisualElement name="ShopBody" class="ap-shop__body">
+            <ui:ScrollView name="FlatContainer" class="ap-shop__scroll" />
+            <ui:VisualElement name="BranchContainer" class="ap-shop__branches" />
+        </ui:VisualElement>
 
         <!-- Status bar -->
         <ui:Label name="ShopStatus" text="Not connected" class="ap-shop__status" />

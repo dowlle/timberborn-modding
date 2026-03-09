@@ -9,11 +9,25 @@ using UnityEngine;
 namespace ArchipelagoIntegration
 {
     /// <summary>
+    /// One entry in the branching shop layout received from slot_data.
+    /// </summary>
+    public class ShopSlot
+    {
+        public string Path;      // "A", "B", "C", "D"
+        public int    Level;     // position within path (0-based)
+        public long   LocationId;
+        public int    Price;     // science cost
+        public int    Tier;      // tier gate (1-5)
+    }
+
+    /// <summary>
     /// Persists Archipelago state to the Timberborn save file:
     /// - ProcessedItemIndex (so reconnects don't replay items)
     /// - Connection data (for auto-reconnect)
     /// - Checked AP locations (shop state)
     /// - Received AP items (tier gate state)
+    /// - Shop layout (from slot_data, for branching shop)
+    /// - Skips available
     /// </summary>
     public class ArchipelagoSaveData : ISaveableSingleton, ILoadableSingleton
     {
@@ -25,6 +39,9 @@ namespace ArchipelagoIntegration
         private static readonly PropertyKey<string> SeedKey = new("Seed");
         private static readonly PropertyKey<string> CheckedLocsKey = new("CheckedLocations");
         private static readonly PropertyKey<string> ReceivedItemsKey = new("ReceivedItems");
+        private static readonly PropertyKey<string> ShopLayoutKey = new("ShopLayout");
+        private static readonly PropertyKey<int> ShopStyleKey = new("ShopStyle");
+        private static readonly PropertyKey<int> SkipsAvailableKey = new("SkipsAvailable");
 
         private readonly ISingletonLoader _singletonLoader;
 
@@ -44,6 +61,18 @@ namespace ArchipelagoIntegration
         /// Used by ApShopPanel for tier gate evaluation.
         /// </summary>
         public HashSet<string> ReceivedItems { get; } = new();
+
+        /// <summary>
+        /// The branching shop layout from slot_data. Null if flat mode.
+        /// Persisted so the shop works offline after first connect.
+        /// </summary>
+        public List<ShopSlot> ShopLayout { get; private set; }
+
+        /// <summary>Shop style: 0 = flat, 1 = branching.</summary>
+        public int ShopStyle { get; set; }
+
+        /// <summary>Number of Skip items available to spend.</summary>
+        public int SkipsAvailable { get; set; }
 
         public ArchipelagoSaveData(ISingletonLoader singletonLoader)
         {
@@ -85,14 +114,42 @@ namespace ArchipelagoIntegration
                         ReceivedItems.Add(item);
             }
 
+            // Restore branching shop layout
+            if (loader.Has(ShopStyleKey))
+                ShopStyle = loader.Get(ShopStyleKey);
+            if (loader.Has(SkipsAvailableKey))
+                SkipsAvailable = loader.Get(SkipsAvailableKey);
+            if (loader.Has(ShopLayoutKey))
+            {
+                var raw = loader.Get(ShopLayoutKey);
+                if (!string.IsNullOrEmpty(raw))
+                    ShopLayout = DeserializeShopLayout(raw);
+            }
+
             Debug.Log($"[Archipelago] Loaded save data: ProcessedItemIndex={ArchipelagoManager.ProcessedItemIndex}, " +
-                      $"CheckedLocs={CheckedLocations.Count}, ReceivedItems={ReceivedItems.Count}");
+                      $"CheckedLocs={CheckedLocations.Count}, ReceivedItems={ReceivedItems.Count}, " +
+                      $"ShopStyle={ShopStyle}, ShopSlots={ShopLayout?.Count ?? 0}, Skips={SkipsAvailable}");
+
+            // Subscribe to connection events to parse slot_data on connect
+            ArchipelagoManager.OnConnectionChanged += OnConnectionChanged;
 
             // Auto-reconnect if we have saved connection data
             if (!string.IsNullOrEmpty(_savedHost) && !string.IsNullOrEmpty(_savedSlot))
             {
                 Debug.Log($"[Archipelago] Attempting auto-reconnect to {_savedHost}:{_savedPort} as '{_savedSlot}'...");
                 ArchipelagoManager.Connect(_savedHost, _savedPort, _savedSlot);
+            }
+        }
+
+        private void OnConnectionChanged(bool connected, string message)
+        {
+            if (!connected) return;
+
+            // Parse shop layout from slot_data if we don't already have one
+            // (first connect or reconnect after losing saved data)
+            if (ShopLayout == null || ShopLayout.Count == 0)
+            {
+                LoadFromSlotData(ArchipelagoManager.SlotData);
             }
         }
 
@@ -117,6 +174,81 @@ namespace ArchipelagoIntegration
                 saver.Set(CheckedLocsKey, string.Join("|", CheckedLocations));
             if (ReceivedItems.Count > 0)
                 saver.Set(ReceivedItemsKey, string.Join("|", ReceivedItems));
+
+            // Persist branching shop layout
+            saver.Set(ShopStyleKey, ShopStyle);
+            saver.Set(SkipsAvailableKey, SkipsAvailable);
+            if (ShopLayout != null && ShopLayout.Count > 0)
+                saver.Set(ShopLayoutKey, SerializeShopLayout(ShopLayout));
+        }
+
+        /// <summary>
+        /// Parse shop_layout from slot_data on first connect.
+        /// Called by the connection flow after ArchipelagoManager.Connect succeeds.
+        /// </summary>
+        public void LoadFromSlotData(Dictionary<string, object> slotData)
+        {
+            if (slotData == null) return;
+
+            if (slotData.TryGetValue("shop_style", out var styleObj))
+                ShopStyle = Convert.ToInt32(styleObj);
+
+            if (ShopStyle == 1 && slotData.TryGetValue("shop_layout", out var layoutObj))
+            {
+                ShopLayout = ParseShopLayoutFromSlotData(layoutObj);
+                Debug.Log($"[Archipelago] Parsed shop_layout from slot_data: {ShopLayout.Count} slots across " +
+                          $"{ShopLayout.Select(s => s.Path).Distinct().Count()} paths");
+            }
+        }
+
+        // -----------------------------------------------------------------
+        // Serialization helpers (pipe-delimited compact format)
+        // Format per slot: "Path,Level,LocationId,Price,Tier"
+        // Slots separated by ";"
+        // -----------------------------------------------------------------
+
+        private static string SerializeShopLayout(List<ShopSlot> layout)
+        {
+            return string.Join(";", layout.Select(s =>
+                $"{s.Path},{s.Level},{s.LocationId},{s.Price},{s.Tier}"));
+        }
+
+        private static List<ShopSlot> DeserializeShopLayout(string raw)
+        {
+            var result = new List<ShopSlot>();
+            foreach (var entry in raw.Split(';'))
+            {
+                var parts = entry.Split(',');
+                if (parts.Length < 5) continue;
+                result.Add(new ShopSlot
+                {
+                    Path = parts[0],
+                    Level = int.Parse(parts[1]),
+                    LocationId = long.Parse(parts[2]),
+                    Price = int.Parse(parts[3]),
+                    Tier = int.Parse(parts[4]),
+                });
+            }
+            return result;
+        }
+
+        private static List<ShopSlot> ParseShopLayoutFromSlotData(object layoutObj)
+        {
+            var result = new List<ShopSlot>();
+            if (layoutObj is not Newtonsoft.Json.Linq.JArray arr) return result;
+
+            foreach (var item in arr)
+            {
+                result.Add(new ShopSlot
+                {
+                    Path = item["path"]?.ToString() ?? "A",
+                    Level = item["level"]?.ToObject<int>() ?? 0,
+                    LocationId = item["location_id"]?.ToObject<long>() ?? 0,
+                    Price = item["price"]?.ToObject<int>() ?? 0,
+                    Tier = item["tier"]?.ToObject<int>() ?? 1,
+                });
+            }
+            return result;
         }
     }
 }

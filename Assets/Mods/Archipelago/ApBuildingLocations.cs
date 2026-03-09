@@ -231,6 +231,9 @@ namespace ArchipelagoIntegration
         /// Returns true if the given tier is accessible based on received AP items.
         /// Mirrors the resource-chain predicates in Rules.py.
         /// </summary>
+        public static bool IsTierUnlocked(int tier, HashSet<string> receivedItems)
+            => IsTierUnlocked((ApTier)tier, receivedItems);
+
         public static bool IsTierUnlocked(ApTier tier, HashSet<string> receivedItems)
         {
             switch (tier)

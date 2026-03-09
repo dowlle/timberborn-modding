@@ -78,6 +78,14 @@ namespace ArchipelagoIntegration
             // Track all received items for tier gate evaluation and save persistence
             _saveData.ReceivedItems.Add(item.ItemName);
 
+            // Handle Skip items (branching shop)
+            if (item.ItemName == "Skip")
+            {
+                _saveData.SkipsAvailable++;
+                Debug.Log($"[Archipelago] Received Skip item (total: {_saveData.SkipsAvailable}) from {item.SenderName}");
+                return;
+            }
+
             if (_itemNameToSpec.TryGetValue(item.ItemName, out var spec))
             {
                 _apUnlocking.Add(spec);

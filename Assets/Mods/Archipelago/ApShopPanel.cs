@@ -13,9 +13,10 @@ using UnityEngine.UIElements;
 namespace ArchipelagoIntegration
 {
     /// <summary>
-    /// The AP Shop panel — a tiered UI where players spend science to "check"
-    /// AP locations (sending them to the server). Tiers unlock progressively
-    /// based on which AP items the player has received, mirroring Rules.py.
+    /// The AP Shop panel — supports two modes:
+    /// - Flat (ShopStyle=0): 5-tier list of named locations, original behavior.
+    /// - Branching (ShopStyle=1): 4 abstract paths (A/B/C/D) with sequential
+    ///   purchases, escalating prices, tier gates, and skip support.
     /// </summary>
     public class ApShopPanel : ILoadableSingleton, IUnloadableSingleton
     {
@@ -27,15 +28,18 @@ namespace ArchipelagoIntegration
 
         private VisualElement _root;
         private Label _scienceLabel;
-        private VisualElement _tierContainer;
         private Label _statusLabel;
+        private Label _skipsLabel;
 
-        // Data model
-        private readonly List<ShopEntry> _entries = new();
-
-        // Per-tier UI containers for refresh
+        // Flat mode
+        private VisualElement _flatContainer;
+        private readonly List<FlatShopEntry> _flatEntries = new();
         private readonly Dictionary<ApTier, VisualElement> _tierBodies = new();
         private readonly Dictionary<ApTier, Label> _tierStatusLabels = new();
+
+        // Branching mode
+        private VisualElement _branchContainer;
+        private readonly Dictionary<string, List<BranchSlotEntry>> _pathSlots = new();
 
         public ApShopPanel(
             UILayout uiLayout,
@@ -53,6 +57,47 @@ namespace ArchipelagoIntegration
 
         public void Load()
         {
+            _root = _visualElementLoader.LoadVisualElement("ArchipelagoShop");
+            _uiLayout.AddBottomRight(_root, 11);
+
+            _scienceLabel = _root.Q<Label>("ScienceLabel");
+            _statusLabel = _root.Q<Label>("ShopStatus");
+            _skipsLabel = _root.Q<Label>("SkipsLabel");
+
+            if (_saveData.ShopStyle == 1 && _saveData.ShopLayout != null && _saveData.ShopLayout.Count > 0)
+                BuildBranchingUI();
+            else
+                BuildFlatUI();
+
+            ArchipelagoManager.OnItemReceived += OnItemReceived;
+            ArchipelagoManager.OnConnectionChanged += OnConnectionChanged;
+
+            Debug.Log($"[Archipelago] AP Shop ready — mode={(_saveData.ShopStyle == 1 ? "branching" : "flat")}");
+        }
+
+        public void Unload()
+        {
+            ArchipelagoManager.OnItemReceived -= OnItemReceived;
+            ArchipelagoManager.OnConnectionChanged -= OnConnectionChanged;
+        }
+
+        public void Show()
+        {
+            _root.style.display = DisplayStyle.Flex;
+            RefreshAll();
+        }
+
+        public void Hide()
+        {
+            _root.style.display = DisplayStyle.None;
+        }
+
+        // =================================================================
+        // FLAT MODE (original 5-tier layout)
+        // =================================================================
+
+        private void BuildFlatUI()
+        {
             // Build data model from location mappings
             foreach (var entry in ApBuildingLocations.AllEntries)
             {
@@ -67,7 +112,7 @@ namespace ArchipelagoIntegration
                 if (spec == null)
                     continue;
 
-                _entries.Add(new ShopEntry
+                _flatEntries.Add(new FlatShopEntry
                 {
                     LocationName = locationName,
                     BuildingName = buildingName,
@@ -76,66 +121,34 @@ namespace ArchipelagoIntegration
                 });
             }
 
-            // Sort entries by tier, then by science cost
-            _entries.Sort((a, b) =>
+            _flatEntries.Sort((a, b) =>
             {
                 int tierCompare = a.Tier.CompareTo(b.Tier);
                 return tierCompare != 0 ? tierCompare : a.ScienceCost.CompareTo(b.ScienceCost);
             });
 
-            // Build UI
-            _root = _visualElementLoader.LoadVisualElement("ArchipelagoShop");
-            _uiLayout.AddBottomRight(_root, 11);
+            _flatContainer = _root.Q<VisualElement>("FlatContainer");
+            if (_flatContainer == null)
+            {
+                _flatContainer = new ScrollView();
+                _flatContainer.name = "FlatContainer";
+                _flatContainer.AddToClassList("ap-shop__scroll");
+                _root.Q<VisualElement>("ShopBody").Add(_flatContainer);
+            }
 
-            _scienceLabel = _root.Q<Label>("ScienceLabel");
-            _tierContainer = _root.Q<ScrollView>("TierContainer");
-            _statusLabel = _root.Q<Label>("ShopStatus");
+            // Hide branching elements
+            var branchEl = _root.Q<VisualElement>("BranchContainer");
+            if (branchEl != null) branchEl.style.display = DisplayStyle.None;
+            if (_skipsLabel != null) _skipsLabel.style.display = DisplayStyle.None;
 
-            BuildTierUI();
-
-            // Subscribe to events
-            ArchipelagoManager.OnItemReceived += OnItemReceived;
-            ArchipelagoManager.OnConnectionChanged += OnConnectionChanged;
-
-            Debug.Log($"[Archipelago] AP Shop ready — {_entries.Count} locations across 5 tiers.");
-        }
-
-        public void Unload()
-        {
-            ArchipelagoManager.OnItemReceived -= OnItemReceived;
-            ArchipelagoManager.OnConnectionChanged -= OnConnectionChanged;
-        }
-
-        // -----------------------------------------------------------------
-        // Show / Hide (called by ApShopTool)
-        // -----------------------------------------------------------------
-
-        public void Show()
-        {
-            _root.style.display = DisplayStyle.Flex;
-            RefreshAll();
-        }
-
-        public void Hide()
-        {
-            _root.style.display = DisplayStyle.None;
-        }
-
-        // -----------------------------------------------------------------
-        // UI Construction
-        // -----------------------------------------------------------------
-
-        private void BuildTierUI()
-        {
             foreach (ApTier tier in Enum.GetValues(typeof(ApTier)))
             {
-                var tierEntries = _entries.Where(e => e.Tier == tier).ToList();
+                var tierEntries = _flatEntries.Where(e => e.Tier == tier).ToList();
                 if (tierEntries.Count == 0) continue;
 
                 var tierSection = new VisualElement();
                 tierSection.AddToClassList("ap-shop__tier");
 
-                // Tier header
                 var header = new VisualElement();
                 header.AddToClassList("ap-shop__tier-header");
 
@@ -150,23 +163,24 @@ namespace ArchipelagoIntegration
 
                 tierSection.Add(header);
 
-                // Tier body (location rows)
                 var body = new VisualElement();
                 _tierBodies[tier] = body;
 
                 foreach (var entry in tierEntries)
                 {
-                    var row = CreateLocationRow(entry);
+                    var row = CreateFlatRow(entry);
                     entry.RowElement = row;
                     body.Add(row);
                 }
 
                 tierSection.Add(body);
-                _tierContainer.Add(tierSection);
+                _flatContainer.Add(tierSection);
             }
+
+            Debug.Log($"[Archipelago] Flat shop: {_flatEntries.Count} locations across 5 tiers.");
         }
 
-        private VisualElement CreateLocationRow(ShopEntry entry)
+        private VisualElement CreateFlatRow(FlatShopEntry entry)
         {
             var row = new VisualElement();
             row.AddToClassList("ap-shop__row");
@@ -179,7 +193,7 @@ namespace ArchipelagoIntegration
             costLabel.AddToClassList("ap-shop__row-cost");
             row.Add(costLabel);
 
-            var checkButton = new Button(() => OnCheckClicked(entry)) { text = "Check" };
+            var checkButton = new Button(() => OnFlatCheckClicked(entry)) { text = "Check" };
             checkButton.AddToClassList("ap-shop__row-button");
             entry.CheckButton = checkButton;
             row.Add(checkButton);
@@ -193,21 +207,207 @@ namespace ArchipelagoIntegration
             return row;
         }
 
-        // -----------------------------------------------------------------
-        // UI Refresh
-        // -----------------------------------------------------------------
+        private void OnFlatCheckClicked(FlatShopEntry entry)
+        {
+            if (_saveData.CheckedLocations.Contains(entry.LocationName)) return;
+            if (!ArchipelagoManager.IsConnected) return;
+            if (_scienceService.SciencePoints < entry.ScienceCost) return;
+
+            _scienceService.SubtractPoints(entry.ScienceCost);
+            ArchipelagoManager.SendLocationCheck(entry.LocationName);
+            _saveData.CheckedLocations.Add(entry.LocationName);
+
+            Debug.Log($"[Archipelago] Shop check: {entry.LocationName} (cost: {entry.ScienceCost})");
+            RefreshAll();
+        }
+
+        // =================================================================
+        // BRANCHING MODE (4-column path layout)
+        // =================================================================
+
+        private void BuildBranchingUI()
+        {
+            // Hide flat elements
+            var flatEl = _root.Q<VisualElement>("FlatContainer");
+            if (flatEl != null) flatEl.style.display = DisplayStyle.None;
+
+            _branchContainer = _root.Q<VisualElement>("BranchContainer");
+            if (_branchContainer == null)
+            {
+                _branchContainer = new VisualElement();
+                _branchContainer.name = "BranchContainer";
+                _branchContainer.AddToClassList("ap-shop__branches");
+                _root.Q<VisualElement>("ShopBody").Add(_branchContainer);
+            }
+
+            // Show skips label
+            if (_skipsLabel != null) _skipsLabel.style.display = DisplayStyle.Flex;
+
+            // Group shop slots by path, sorted by level
+            var grouped = _saveData.ShopLayout
+                .GroupBy(s => s.Path)
+                .OrderBy(g => g.Key)
+                .ToDictionary(g => g.Key, g => g.OrderBy(s => s.Level).ToList());
+
+            foreach (var (path, slots) in grouped)
+            {
+                var column = new VisualElement();
+                column.AddToClassList("ap-shop__path-column");
+
+                // Path header
+                var pathHeader = new Label($"Path {path}");
+                pathHeader.AddToClassList("ap-shop__path-header");
+                column.Add(pathHeader);
+
+                // Scrollable slot list
+                var slotScroll = new ScrollView();
+                slotScroll.AddToClassList("ap-shop__path-scroll");
+
+                var slotEntries = new List<BranchSlotEntry>();
+                for (int i = 0; i < slots.Count; i++)
+                {
+                    var slot = slots[i];
+                    var entry = new BranchSlotEntry
+                    {
+                        Slot = slot,
+                        Index = i,
+                        Path = path,
+                    };
+
+                    var row = CreateBranchRow(entry);
+                    entry.RowElement = row;
+                    slotScroll.Add(row);
+                    slotEntries.Add(entry);
+                }
+
+                column.Add(slotScroll);
+                _branchContainer.Add(column);
+                _pathSlots[path] = slotEntries;
+            }
+
+            Debug.Log($"[Archipelago] Branching shop: {_saveData.ShopLayout.Count} slots across {grouped.Count} paths.");
+        }
+
+        private VisualElement CreateBranchRow(BranchSlotEntry entry)
+        {
+            var row = new VisualElement();
+            row.AddToClassList("ap-shop__branch-row");
+
+            // Slot label: "A-1", "B-5", etc. (1-based for display)
+            var slotLabel = new Label($"{entry.Path}-{entry.Index + 1}");
+            slotLabel.AddToClassList("ap-shop__branch-label");
+            row.Add(slotLabel);
+
+            // Price
+            var priceLabel = new Label($"{entry.Slot.Price}");
+            priceLabel.AddToClassList("ap-shop__branch-price");
+            entry.PriceLabel = priceLabel;
+            row.Add(priceLabel);
+
+            // Tier indicator
+            var tierLabel = new Label($"T{entry.Slot.Tier}");
+            tierLabel.AddToClassList("ap-shop__branch-tier");
+            entry.TierLabel = tierLabel;
+            row.Add(tierLabel);
+
+            // Check button
+            var checkBtn = new Button(() => OnBranchCheckClicked(entry)) { text = "Buy" };
+            checkBtn.AddToClassList("ap-shop__branch-button");
+            entry.CheckButton = checkBtn;
+            row.Add(checkBtn);
+
+            // Skip button
+            var skipBtn = new Button(() => OnBranchSkipClicked(entry)) { text = "Skip" };
+            skipBtn.AddToClassList("ap-shop__branch-skip-button");
+            entry.SkipButton = skipBtn;
+            row.Add(skipBtn);
+
+            // Checked indicator
+            var checkedLabel = new Label("\u2713");
+            checkedLabel.AddToClassList("ap-shop__branch-checked");
+            checkedLabel.style.display = DisplayStyle.None;
+            entry.CheckedLabel = checkedLabel;
+            row.Add(checkedLabel);
+
+            return row;
+        }
+
+        private void OnBranchCheckClicked(BranchSlotEntry entry)
+        {
+            if (!CanPurchaseBranchSlot(entry)) return;
+
+            _scienceService.SubtractPoints(entry.Slot.Price);
+            ArchipelagoManager.SendLocationCheck(entry.Slot.LocationId);
+            _saveData.CheckedLocations.Add(entry.Slot.LocationId.ToString());
+
+            Debug.Log($"[Archipelago] Branch check: {entry.Path}-{entry.Index + 1} " +
+                      $"(loc={entry.Slot.LocationId}, cost={entry.Slot.Price})");
+            RefreshAll();
+        }
+
+        private void OnBranchSkipClicked(BranchSlotEntry entry)
+        {
+            if (_saveData.SkipsAvailable <= 0) return;
+            if (!IsBranchSlotAvailable(entry)) return;
+            if (IsBranchSlotChecked(entry)) return;
+
+            _saveData.SkipsAvailable--;
+            ArchipelagoManager.SendLocationCheck(entry.Slot.LocationId);
+            _saveData.CheckedLocations.Add(entry.Slot.LocationId.ToString());
+
+            Debug.Log($"[Archipelago] Branch skip: {entry.Path}-{entry.Index + 1} " +
+                      $"(loc={entry.Slot.LocationId}, skips remaining={_saveData.SkipsAvailable})");
+            RefreshAll();
+        }
+
+        private bool IsBranchSlotChecked(BranchSlotEntry entry)
+        {
+            return _saveData.CheckedLocations.Contains(entry.Slot.LocationId.ToString());
+        }
+
+        private bool IsBranchSlotAvailable(BranchSlotEntry entry)
+        {
+            // Tier gate
+            if (!ApBuildingLocations.IsTierUnlocked(entry.Slot.Tier, _saveData.ReceivedItems))
+                return false;
+
+            // Sequential: first in path always available, others require predecessor checked
+            if (entry.Index == 0)
+                return true;
+
+            var pathEntries = _pathSlots[entry.Path];
+            var prev = pathEntries[entry.Index - 1];
+            return IsBranchSlotChecked(prev);
+        }
+
+        private bool CanPurchaseBranchSlot(BranchSlotEntry entry)
+        {
+            if (!ArchipelagoManager.IsConnected) return false;
+            if (IsBranchSlotChecked(entry)) return false;
+            if (!IsBranchSlotAvailable(entry)) return false;
+            if (_scienceService.SciencePoints < entry.Slot.Price) return false;
+            return true;
+        }
+
+        // =================================================================
+        // Refresh
+        // =================================================================
 
         private void RefreshAll()
         {
-            // Update science display
             _scienceLabel.text = $"Science: {_scienceService.SciencePoints}";
-
-            // Update connection status
             _statusLabel.text = ArchipelagoManager.IsConnected
                 ? $"Connected as {ArchipelagoManager.CurrentSlot}"
                 : "Not connected";
 
-            // Update tier states and buttons
+            if (_saveData.ShopStyle == 1 && _pathSlots.Count > 0)
+                RefreshBranching();
+            else
+                RefreshFlat();
+        }
+
+        private void RefreshFlat()
+        {
             foreach (ApTier tier in Enum.GetValues(typeof(ApTier)))
             {
                 if (!_tierBodies.ContainsKey(tier)) continue;
@@ -217,8 +417,7 @@ namespace ArchipelagoIntegration
                 _tierBodies[tier].style.display = unlocked ? DisplayStyle.Flex : DisplayStyle.None;
             }
 
-            // Update individual entry states
-            foreach (var entry in _entries)
+            foreach (var entry in _flatEntries)
             {
                 bool isChecked = _saveData.CheckedLocations.Contains(entry.LocationName);
                 bool canAfford = _scienceService.SciencePoints >= entry.ScienceCost;
@@ -236,36 +435,52 @@ namespace ArchipelagoIntegration
             }
         }
 
-        // -----------------------------------------------------------------
-        // Actions
-        // -----------------------------------------------------------------
-
-        private void OnCheckClicked(ShopEntry entry)
+        private void RefreshBranching()
         {
-            if (_saveData.CheckedLocations.Contains(entry.LocationName))
-                return;
-            if (!ArchipelagoManager.IsConnected)
-                return;
-            if (_scienceService.SciencePoints < entry.ScienceCost)
-                return;
+            if (_skipsLabel != null)
+                _skipsLabel.text = $"Skips: {_saveData.SkipsAvailable}";
 
-            // Deduct science and send check
-            _scienceService.SubtractPoints(entry.ScienceCost);
-            ArchipelagoManager.SendLocationCheck(entry.LocationName);
-            _saveData.CheckedLocations.Add(entry.LocationName);
+            foreach (var (path, entries) in _pathSlots)
+            {
+                foreach (var entry in entries)
+                {
+                    bool isChecked = IsBranchSlotChecked(entry);
+                    bool isAvailable = !isChecked && IsBranchSlotAvailable(entry);
+                    bool canAfford = _scienceService.SciencePoints >= entry.Slot.Price;
+                    bool connected = ArchipelagoManager.IsConnected;
 
-            Debug.Log($"[Archipelago] Shop check: {entry.LocationName} (cost: {entry.ScienceCost})");
-            RefreshAll();
+                    // Row styling
+                    entry.RowElement.RemoveFromClassList("ap-shop__branch-row--checked");
+                    entry.RowElement.RemoveFromClassList("ap-shop__branch-row--available");
+                    entry.RowElement.RemoveFromClassList("ap-shop__branch-row--locked");
+
+                    if (isChecked)
+                        entry.RowElement.AddToClassList("ap-shop__branch-row--checked");
+                    else if (isAvailable)
+                        entry.RowElement.AddToClassList("ap-shop__branch-row--available");
+                    else
+                        entry.RowElement.AddToClassList("ap-shop__branch-row--locked");
+
+                    // Buttons
+                    entry.CheckButton.style.display = isChecked ? DisplayStyle.None : DisplayStyle.Flex;
+                    entry.CheckButton.SetEnabled(isAvailable && canAfford && connected);
+
+                    entry.SkipButton.style.display = (isAvailable && !isChecked && _saveData.SkipsAvailable > 0)
+                        ? DisplayStyle.Flex : DisplayStyle.None;
+                    entry.SkipButton.SetEnabled(connected);
+
+                    entry.CheckedLabel.style.display = isChecked ? DisplayStyle.Flex : DisplayStyle.None;
+                }
+            }
         }
 
-        // -----------------------------------------------------------------
+        // =================================================================
         // Event handlers
-        // -----------------------------------------------------------------
+        // =================================================================
 
         private void OnItemReceived(ApItem item)
         {
             _saveData.ReceivedItems.Add(item.ItemName);
-            // Refresh if the panel is visible (tier gates may have changed)
             if (_root.style.display == DisplayStyle.Flex)
                 RefreshAll();
         }
@@ -276,11 +491,11 @@ namespace ArchipelagoIntegration
                 RefreshAll();
         }
 
-        // -----------------------------------------------------------------
-        // Data model
-        // -----------------------------------------------------------------
+        // =================================================================
+        // Data models
+        // =================================================================
 
-        private class ShopEntry
+        private class FlatShopEntry
         {
             public string LocationName;
             public string BuildingName;
@@ -288,6 +503,19 @@ namespace ArchipelagoIntegration
             public ApTier Tier;
             public VisualElement RowElement;
             public Button CheckButton;
+            public Label CheckedLabel;
+        }
+
+        private class BranchSlotEntry
+        {
+            public ShopSlot Slot;
+            public int Index;
+            public string Path;
+            public VisualElement RowElement;
+            public Label PriceLabel;
+            public Label TierLabel;
+            public Button CheckButton;
+            public Button SkipButton;
             public Label CheckedLabel;
         }
     }

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using Archipelago.MultiClient.Net;
 using Archipelago.MultiClient.Net.Enums;
 using Archipelago.MultiClient.Net.Helpers;
@@ -48,6 +49,12 @@ namespace ArchipelagoIntegration
         public static int    CurrentPort  { get; private set; }
 
         /// <summary>
+        /// Slot data received from the server on login.
+        /// Contains shop_layout, goal, options, etc.
+        /// </summary>
+        public static Dictionary<string, object> SlotData { get; private set; }
+
+        /// <summary>
         /// Index of the next item we have not yet processed.
         /// Persisted to the save file so reconnects don't replay already-handled items.
         /// </summary>
@@ -88,13 +95,16 @@ namespace ArchipelagoIntegration
 
             if (loginResult.Successful)
             {
+                var success  = (LoginSuccessful)loginResult;
                 IsConnected  = true;
                 CurrentSlot  = slotName;
                 CurrentHost  = host;
                 CurrentPort  = port;
                 CurrentSeed  = _session.RoomState.Seed;
+                SlotData     = success.SlotData;
 
                 Debug.Log($"[Archipelago] Connected to {host}:{port} as '{slotName}'. Seed: {CurrentSeed}");
+                Debug.Log($"[Archipelago] SlotData keys: {string.Join(", ", SlotData.Keys)}");
                 OnConnectionChanged?.Invoke(true, $"Connected as {slotName}");
             }
             else
@@ -123,6 +133,7 @@ namespace ArchipelagoIntegration
             IsConnected  = false;
             CurrentSlot  = null;
             CurrentSeed  = null;
+            SlotData     = null;
 
             Debug.Log("[Archipelago] Disconnected.");
             OnConnectionChanged?.Invoke(false, "Disconnected");
