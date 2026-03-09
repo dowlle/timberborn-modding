@@ -259,19 +259,6 @@ namespace ArchipelagoIntegration
             }
         }
 
-        public static string GetTierRequirements(ApTier tier)
-        {
-            switch (tier)
-            {
-                case ApTier.Tier1: return "Always available";
-                case ApTier.Tier2: return "Requires: Gear Workshop";
-                case ApTier.Tier3: return "Requires: Scavenger Flag, Smelter";
-                case ApTier.Tier4: return "Requires: Tapper's Shack, Wood Workshop";
-                case ApTier.Tier5: return "Requires: Bot Part Factory, Bot Assembler";
-                default: return "";
-            }
-        }
-
         // -----------------------------------------------------------------
         // Lookups
         // -----------------------------------------------------------------

@@ -9,9 +9,8 @@
             <ui:Label name="SkipsLabel" text="Skips: 0" class="ap-shop__skips" />
         </ui:VisualElement>
 
-        <!-- Shop body — flat tiers or branching columns populated by ApShopPanel.cs -->
+        <!-- Shop body — branching columns populated by ApShopPanel.cs -->
         <ui:VisualElement name="ShopBody" class="ap-shop__body">
-            <ui:ScrollView name="FlatContainer" class="ap-shop__scroll" />
             <ui:VisualElement name="BranchContainer" class="ap-shop__branches" />
         </ui:VisualElement>
 

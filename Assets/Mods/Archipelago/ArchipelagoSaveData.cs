@@ -40,8 +40,10 @@ namespace ArchipelagoIntegration
         private static readonly PropertyKey<string> CheckedLocsKey = new("CheckedLocations");
         private static readonly PropertyKey<string> ReceivedItemsKey = new("ReceivedItems");
         private static readonly PropertyKey<string> ShopLayoutKey = new("ShopLayout");
-        private static readonly PropertyKey<int> ShopStyleKey = new("ShopStyle");
         private static readonly PropertyKey<int> SkipsAvailableKey = new("SkipsAvailable");
+
+        /// <summary>Fired when ShopLayout becomes available (from save or slot_data).</summary>
+        public static event Action OnShopLayoutAvailable;
 
         private readonly ISingletonLoader _singletonLoader;
 
@@ -63,13 +65,10 @@ namespace ArchipelagoIntegration
         public HashSet<string> ReceivedItems { get; } = new();
 
         /// <summary>
-        /// The branching shop layout from slot_data. Null if flat mode.
+        /// The branching shop layout from slot_data.
         /// Persisted so the shop works offline after first connect.
         /// </summary>
         public List<ShopSlot> ShopLayout { get; private set; }
-
-        /// <summary>Shop style: 0 = flat, 1 = branching.</summary>
-        public int ShopStyle { get; set; }
 
         /// <summary>Number of Skip items available to spend.</summary>
         public int SkipsAvailable { get; set; }
@@ -81,6 +80,9 @@ namespace ArchipelagoIntegration
 
         public void Load()
         {
+            // Always subscribe to connection events — even on fresh saves with no AP data
+            ArchipelagoManager.OnConnectionChanged += OnConnectionChanged;
+
             if (!_singletonLoader.TryGetSingleton(ArchipelagoKey, out var loader))
             {
                 Debug.Log("[Archipelago] No saved AP data found in this save file.");
@@ -115,8 +117,6 @@ namespace ArchipelagoIntegration
             }
 
             // Restore branching shop layout
-            if (loader.Has(ShopStyleKey))
-                ShopStyle = loader.Get(ShopStyleKey);
             if (loader.Has(SkipsAvailableKey))
                 SkipsAvailable = loader.Get(SkipsAvailableKey);
             if (loader.Has(ShopLayoutKey))
@@ -128,10 +128,10 @@ namespace ArchipelagoIntegration
 
             Debug.Log($"[Archipelago] Loaded save data: ProcessedItemIndex={ArchipelagoManager.ProcessedItemIndex}, " +
                       $"CheckedLocs={CheckedLocations.Count}, ReceivedItems={ReceivedItems.Count}, " +
-                      $"ShopStyle={ShopStyle}, ShopSlots={ShopLayout?.Count ?? 0}, Skips={SkipsAvailable}");
+                      $"ShopSlots={ShopLayout?.Count ?? 0}, Skips={SkipsAvailable}");
 
-            // Subscribe to connection events to parse slot_data on connect
-            ArchipelagoManager.OnConnectionChanged += OnConnectionChanged;
+            if (ShopLayout != null && ShopLayout.Count > 0)
+                OnShopLayoutAvailable?.Invoke();
 
             // Auto-reconnect if we have saved connection data
             if (!string.IsNullOrEmpty(_savedHost) && !string.IsNullOrEmpty(_savedSlot))
@@ -145,11 +145,21 @@ namespace ArchipelagoIntegration
         {
             if (!connected) return;
 
+            Debug.Log($"[Archipelago] SaveData.OnConnectionChanged — ShopLayout null={ShopLayout == null}, count={ShopLayout?.Count ?? -1}");
+
             // Parse shop layout from slot_data if we don't already have one
-            // (first connect or reconnect after losing saved data)
             if (ShopLayout == null || ShopLayout.Count == 0)
             {
                 LoadFromSlotData(ArchipelagoManager.SlotData);
+                if (ShopLayout != null && ShopLayout.Count > 0)
+                {
+                    Debug.Log($"[Archipelago] Firing OnShopLayoutAvailable ({ShopLayout.Count} slots)");
+                    OnShopLayoutAvailable?.Invoke();
+                }
+                else
+                {
+                    Debug.LogWarning("[Archipelago] ShopLayout still empty after LoadFromSlotData");
+                }
             }
         }
 
@@ -176,7 +186,6 @@ namespace ArchipelagoIntegration
                 saver.Set(ReceivedItemsKey, string.Join("|", ReceivedItems));
 
             // Persist branching shop layout
-            saver.Set(ShopStyleKey, ShopStyle);
             saver.Set(SkipsAvailableKey, SkipsAvailable);
             if (ShopLayout != null && ShopLayout.Count > 0)
                 saver.Set(ShopLayoutKey, SerializeShopLayout(ShopLayout));
@@ -188,16 +197,22 @@ namespace ArchipelagoIntegration
         /// </summary>
         public void LoadFromSlotData(Dictionary<string, object> slotData)
         {
-            if (slotData == null) return;
-
-            if (slotData.TryGetValue("shop_style", out var styleObj))
-                ShopStyle = Convert.ToInt32(styleObj);
-
-            if (ShopStyle == 1 && slotData.TryGetValue("shop_layout", out var layoutObj))
+            if (slotData == null)
             {
+                Debug.LogWarning("[Archipelago] LoadFromSlotData called with null slotData");
+                return;
+            }
+
+            if (slotData.TryGetValue("shop_layout", out var layoutObj))
+            {
+                Debug.Log($"[Archipelago] shop_layout type: {layoutObj?.GetType().FullName}");
                 ShopLayout = ParseShopLayoutFromSlotData(layoutObj);
                 Debug.Log($"[Archipelago] Parsed shop_layout from slot_data: {ShopLayout.Count} slots across " +
                           $"{ShopLayout.Select(s => s.Path).Distinct().Count()} paths");
+            }
+            else
+            {
+                Debug.LogWarning("[Archipelago] slot_data has no 'shop_layout' key");
             }
         }
 
@@ -235,7 +250,27 @@ namespace ArchipelagoIntegration
         private static List<ShopSlot> ParseShopLayoutFromSlotData(object layoutObj)
         {
             var result = new List<ShopSlot>();
-            if (layoutObj is not Newtonsoft.Json.Linq.JArray arr) return result;
+
+            // Try direct JArray cast first
+            Newtonsoft.Json.Linq.JArray arr = layoutObj as Newtonsoft.Json.Linq.JArray;
+
+            // If it's a JToken but not JArray, try converting
+            if (arr == null && layoutObj is Newtonsoft.Json.Linq.JToken token)
+                arr = token as Newtonsoft.Json.Linq.JArray;
+
+            // If it's a raw string, try parsing
+            if (arr == null && layoutObj is string str)
+            {
+                try { arr = Newtonsoft.Json.Linq.JArray.Parse(str); }
+                catch { /* not valid JSON array */ }
+            }
+
+            if (arr == null)
+            {
+                Debug.LogWarning($"[Archipelago] Cannot parse shop_layout: " +
+                                 $"expected JArray, got {layoutObj?.GetType().FullName}");
+                return result;
+            }
 
             foreach (var item in arr)
             {
@@ -248,6 +283,8 @@ namespace ArchipelagoIntegration
                     Tier = item["tier"]?.ToObject<int>() ?? 1,
                 });
             }
+
+            Debug.Log($"[Archipelago] Parsed {result.Count} shop slots from slot_data");
             return result;
         }
     }
