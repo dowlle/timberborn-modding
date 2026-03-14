@@ -87,7 +87,7 @@ namespace ArchipelagoIntegration
             _collapsed = !_collapsed;
             _scrollView.style.display = _collapsed ? DisplayStyle.None : DisplayStyle.Flex;
             if (_toggleButton != null)
-                _toggleButton.text = _collapsed ? "\u25B2" : "\u25BC";
+                _toggleButton.text = _collapsed ? "\u25BC" : "\u25B2";
         }
     }
 }

@@ -23,8 +23,9 @@ namespace ArchipelagoIntegration
 
         public void Load()
         {
+            string faction = ApBuildingLocations.GetFaction();
             int blocked = 0;
-            foreach (var entry in ApBuildingLocations.AllEntries)
+            foreach (var entry in ApBuildingLocations.GetEntries(faction))
             {
                 var templateName = entry.Key;
                 if (!_templateNameMapper.TryGetTemplate(templateName, out var template))
@@ -40,7 +41,7 @@ namespace ArchipelagoIntegration
                     blocked++;
             }
 
-            Debug.Log($"[Archipelago] Blocked vanilla science unlocks for {blocked} buildings");
+            Debug.Log($"[Archipelago] Blocked vanilla science unlocks for {blocked} {faction} buildings");
         }
 
         private static FieldInfo _scienceCostField;

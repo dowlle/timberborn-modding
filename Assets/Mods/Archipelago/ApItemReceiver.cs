@@ -39,13 +39,11 @@ namespace ArchipelagoIntegration
 
         public void Load()
         {
-            foreach (var entry in ApBuildingLocations.AllEntries)
+            string faction = ApBuildingLocations.GetFaction();
+            foreach (var entry in ApBuildingLocations.GetEntries(faction))
             {
                 var templateName = entry.Key;
-                var locationName = entry.Value; // "Science: Forester"
-
-                // Derive item name: "Science: X" → "Blueprint: X"
-                var buildingName = locationName.Replace("Science: ", "");
+                var buildingName = entry.Value;
                 var itemName = $"Blueprint: {buildingName}";
 
                 if (!_templateNameMapper.TryGetTemplate(templateName, out var template))
@@ -64,7 +62,7 @@ namespace ArchipelagoIntegration
                 _itemNameToSpec[itemName] = spec;
             }
 
-            Debug.Log($"[Archipelago] Item receiver ready — {_itemNameToSpec.Count} buildings mapped.");
+            Debug.Log($"[Archipelago] Item receiver ready — {_itemNameToSpec.Count} {faction} buildings mapped.");
             ArchipelagoManager.OnItemReceived += HandleItem;
         }
 

@@ -202,3 +202,74 @@
     color: rgb(160, 140, 100);
     -unity-text-align: middle-center;
 }
+
+/* ============================================================
+   Connection section (integrated into shop panel)
+   ============================================================ */
+.ap-shop__connection {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top-width: 1px;
+    border-top-color: rgb(80, 70, 50);
+}
+
+.ap-connect__form {
+    margin-bottom: 6px;
+}
+
+.ap-connect__field {
+    margin-bottom: 3px;
+}
+
+.ap-connect__field > Label {
+    min-width: 70px;
+    color: rgb(200, 180, 140);
+    font-size: 11px;
+}
+
+.ap-connect__field > .unity-text-field__input {
+    background-color: rgba(50, 45, 35, 0.80);
+    border-color: rgb(100, 85, 60);
+    border-radius: 3px;
+    color: rgb(230, 220, 200);
+    font-size: 11px;
+    padding: 2px 4px;
+}
+
+.ap-connect__buttons {
+    flex-direction: row;
+    justify-content: space-between;
+    margin-bottom: 4px;
+}
+
+.ap-connect__button {
+    flex-grow: 1;
+    height: 26px;
+    margin: 0 2px;
+    background-color: rgb(80, 120, 60);
+    border-color: rgb(100, 150, 70);
+    border-radius: 4px;
+    color: rgb(240, 240, 230);
+    -unity-font-style: bold;
+    font-size: 11px;
+}
+
+.ap-connect__button:hover {
+    background-color: rgb(100, 145, 75);
+}
+
+.ap-connect__button--secondary {
+    background-color: rgb(120, 70, 50);
+    border-color: rgb(150, 85, 60);
+}
+
+.ap-connect__button--secondary:hover {
+    background-color: rgb(145, 85, 60);
+}
+
+.ap-connect__status {
+    color: rgb(180, 160, 120);
+    font-size: 10px;
+    -unity-text-align: middle-center;
+    white-space: normal;
+}

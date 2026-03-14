@@ -16,5 +16,20 @@
 
         <!-- Status bar -->
         <ui:Label name="ShopStatus" text="Not connected" class="ap-shop__status" />
+
+        <!-- Connection section -->
+        <ui:VisualElement name="ConnectionSection" class="ap-shop__connection">
+            <ui:VisualElement class="ap-connect__form">
+                <ui:TextField name="HostField" label="Host" class="ap-connect__field" />
+                <ui:TextField name="PortField" label="Port" class="ap-connect__field" />
+                <ui:TextField name="SlotField" label="Slot" class="ap-connect__field" />
+                <ui:TextField name="PasswordField" label="Password" class="ap-connect__field" />
+            </ui:VisualElement>
+            <ui:VisualElement class="ap-connect__buttons">
+                <ui:Button name="ConnectButton" text="Connect" class="ap-connect__button" />
+                <ui:Button name="DisconnectButton" text="Disconnect" class="ap-connect__button ap-connect__button--secondary" />
+            </ui:VisualElement>
+            <ui:Label name="ConnectionStatus" text="" class="ap-connect__status" />
+        </ui:VisualElement>
     </ui:VisualElement>
 </ui:UXML>

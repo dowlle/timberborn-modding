@@ -32,6 +32,15 @@ namespace ArchipelagoIntegration
         private readonly Dictionary<string, List<BranchSlotEntry>> _pathSlots = new();
         private readonly Dictionary<string, PathCard> _pathCards = new();
 
+        // Connection fields (integrated into shop panel)
+        private TextField _hostField;
+        private TextField _portField;
+        private TextField _slotField;
+        private TextField _passwordField;
+        private Button _connectButton;
+        private Button _disconnectButton;
+        private Label _connectionStatusLabel;
+
         public ApShopPanel(
             UILayout uiLayout,
             VisualElementLoader visualElementLoader,
@@ -78,10 +87,27 @@ namespace ArchipelagoIntegration
             if (_saveData.ShopLayout != null && _saveData.ShopLayout.Count > 0)
                 OnShopLayoutAvailable();
 
+            // Connection fields (integrated into shop panel)
+            _hostField = _root.Q<TextField>("HostField");
+            _portField = _root.Q<TextField>("PortField");
+            _slotField = _root.Q<TextField>("SlotField");
+            _passwordField = _root.Q<TextField>("PasswordField");
+            _connectButton = _root.Q<Button>("ConnectButton");
+            _disconnectButton = _root.Q<Button>("DisconnectButton");
+            _connectionStatusLabel = _root.Q<Label>("ConnectionStatus");
+
+            _hostField.value = PlayerPrefs.GetString("AP_Host", "localhost");
+            _portField.value = PlayerPrefs.GetString("AP_Port", "38281");
+            _slotField.value = PlayerPrefs.GetString("AP_Slot", "");
+
+            _connectButton.RegisterCallback<ClickEvent>(_ => OnConnectClicked());
+            _disconnectButton.RegisterCallback<ClickEvent>(_ => OnDisconnectClicked());
+
             ArchipelagoSaveData.OnShopLayoutAvailable += OnShopLayoutAvailable;
             ArchipelagoManager.OnItemReceived += OnItemReceived;
             ArchipelagoManager.OnConnectionChanged += OnConnectionChanged;
 
+            UpdateConnectionButtons();
             Debug.Log("[Archipelago] AP Shop ready — waiting for layout.");
         }
 
@@ -226,7 +252,8 @@ namespace ArchipelagoIntegration
 
         private bool IsBranchSlotAvailable(BranchSlotEntry entry)
         {
-            if (!ApBuildingLocations.IsTierUnlocked(entry.Slot.Tier, _saveData.ReceivedItems))
+            string faction = ApBuildingLocations.GetFaction();
+            if (!ApBuildingLocations.IsTierUnlocked(entry.Slot.Tier, _saveData.ReceivedItems, faction))
                 return false;
 
             if (entry.Index == 0)
@@ -247,14 +274,7 @@ namespace ArchipelagoIntegration
 
         private static string GetTierRequirementText(int tier)
         {
-            switch (tier)
-            {
-                case 2: return "Requires: Gear Workshop";
-                case 3: return "Requires: Scavenger Flag + Smelter";
-                case 4: return "Requires: Tapper's Shack + Wood Workshop";
-                case 5: return "Requires: Bot Part Factory + Bot Assembler";
-                default: return "";
-            }
+            return ApBuildingLocations.GetTierRequirementText(tier, ApBuildingLocations.GetFaction());
         }
 
         // =================================================================
@@ -379,8 +399,53 @@ namespace ArchipelagoIntegration
 
         private void OnConnectionChanged(bool connected, string message)
         {
+            if (_connectionStatusLabel != null)
+                _connectionStatusLabel.text = message;
+            UpdateConnectionButtons();
             if (_root.style.display == DisplayStyle.Flex)
                 RefreshAll();
+        }
+
+        // =================================================================
+        // Connection logic (merged from ArchipelagoConnectPanel)
+        // =================================================================
+
+        private void OnConnectClicked()
+        {
+            var host = _hostField.value.Trim();
+            if (!int.TryParse(_portField.value.Trim(), out var port))
+            {
+                _connectionStatusLabel.text = "Invalid port number";
+                return;
+            }
+            var slot = _slotField.value.Trim();
+            var password = _passwordField.value;
+
+            if (string.IsNullOrEmpty(host) || string.IsNullOrEmpty(slot))
+            {
+                _connectionStatusLabel.text = "Host and slot are required";
+                return;
+            }
+
+            PlayerPrefs.SetString("AP_Host", host);
+            PlayerPrefs.SetString("AP_Port", port.ToString());
+            PlayerPrefs.SetString("AP_Slot", slot);
+            PlayerPrefs.Save();
+
+            _connectionStatusLabel.text = "Connecting...";
+            ArchipelagoManager.Connect(host, port, slot, password);
+        }
+
+        private void OnDisconnectClicked()
+        {
+            ArchipelagoManager.Disconnect();
+        }
+
+        private void UpdateConnectionButtons()
+        {
+            var connected = ArchipelagoManager.IsConnected;
+            _connectButton?.SetEnabled(!connected);
+            _disconnectButton?.SetEnabled(connected);
         }
 
         // =================================================================
