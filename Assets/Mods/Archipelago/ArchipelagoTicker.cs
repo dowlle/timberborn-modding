@@ -15,6 +15,7 @@ namespace ArchipelagoIntegration
             {
                 ArchipelagoManager.DrainItemQueue();
                 ApMilestoneTracker.Instance?.CheckMilestones();
+                ApGoalTracker.Instance?.CheckGoals();
             }
         }
     }

@@ -22,6 +22,9 @@ namespace ArchipelagoIntegration
             // Milestone tracking (population, wellbeing, survival, wonder)
             Bind<ApMilestoneTracker>().AsSingleton();
 
+            // Goal tracking (modular victory conditions)
+            Bind<ApGoalTracker>().AsSingleton();
+
             // AP Shop (tiered location check panel)
             Bind<ApShopPanel>().AsSingleton();
             Bind<ApShopTool>().AsSingleton();

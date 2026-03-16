@@ -45,12 +45,20 @@ namespace ArchipelagoIntegration
         private static readonly PropertyKey<string> CheckedMilestonesKey = new("CheckedMilestones");
         private static readonly PropertyKey<string> ProgressiveChainsKey = new("ProgressiveChains");
         private static readonly PropertyKey<string> ProgressiveCountersKey = new("ProgressiveCounters");
+        private static readonly PropertyKey<string> GoalsKey = new("Goals");
+        private static readonly PropertyKey<int> GoalRequirementKey = new("GoalRequirement");
+        private static readonly PropertyKey<int> PopulationModeKey = new("PopulationMode");
+        private static readonly PropertyKey<string> CompletedGoalsKey = new("CompletedGoals");
+        private static readonly PropertyKey<int> GoalAchievedKey = new("GoalAchieved");
 
         /// <summary>Fired when ShopLayout becomes available (from save or slot_data).</summary>
         public static event Action OnShopLayoutAvailable;
 
         /// <summary>Fired when milestone definitions become available (from save or slot_data).</summary>
         public static event Action OnMilestonesAvailable;
+
+        /// <summary>Fired when goal definitions become available (from save or slot_data).</summary>
+        public static event Action OnGoalsAvailable;
 
         private readonly ISingletonLoader _singletonLoader;
 
@@ -97,6 +105,21 @@ namespace ArchipelagoIntegration
         /// Persisted so reconnects don't double-unlock buildings.
         /// </summary>
         public Dictionary<string, int> ProgressiveCounters { get; private set; } = new();
+
+        /// <summary>Goal definitions from slot_data (persisted for offline use).</summary>
+        public List<GoalDefinition> Goals { get; private set; }
+
+        /// <summary>Goal requirement mode: 0=any, 1=all.</summary>
+        public int GoalRequirement { get; set; }
+
+        /// <summary>Population mode: 0=beavers_only, 1=bots_only, 2=beavers_and_bots.</summary>
+        public int PopulationMode { get; set; }
+
+        /// <summary>Names of goals already completed by the player.</summary>
+        public HashSet<string> CompletedGoals { get; } = new();
+
+        /// <summary>Whether the overall goal has been achieved (sent to server).</summary>
+        public bool GoalAchieved { get; set; }
 
         public ArchipelagoSaveData(ISingletonLoader singletonLoader)
         {
@@ -181,17 +204,42 @@ namespace ArchipelagoIntegration
                     ProgressiveCounters = DeserializeProgressiveCounters(raw);
             }
 
+            // Restore goal data
+            if (loader.Has(GoalsKey))
+            {
+                var raw = loader.Get(GoalsKey);
+                if (!string.IsNullOrEmpty(raw))
+                    Goals = DeserializeGoals(raw);
+            }
+            if (loader.Has(GoalRequirementKey))
+                GoalRequirement = loader.Get(GoalRequirementKey);
+            if (loader.Has(PopulationModeKey))
+                PopulationMode = loader.Get(PopulationModeKey);
+            if (loader.Has(CompletedGoalsKey))
+            {
+                var raw = loader.Get(CompletedGoalsKey);
+                if (!string.IsNullOrEmpty(raw))
+                    foreach (var g in raw.Split('|'))
+                        CompletedGoals.Add(g);
+            }
+            if (loader.Has(GoalAchievedKey))
+                GoalAchieved = loader.Get(GoalAchievedKey) == 1;
+
             Debug.Log($"[Archipelago] Loaded save data: ProcessedItemIndex={ArchipelagoManager.ProcessedItemIndex}, " +
                       $"CheckedLocs={CheckedLocations.Count}, ReceivedItems={ReceivedItems.Count}, " +
                       $"ShopSlots={ShopLayout?.Count ?? 0}, Skips={SkipsAvailable}, " +
                       $"Milestones={Milestones?.Count ?? 0}, CheckedMilestones={CheckedMilestoneIds.Count}, " +
-                      $"ProgressiveChains={ProgressiveChains.Count}");
+                      $"ProgressiveChains={ProgressiveChains.Count}, " +
+                      $"Goals={Goals?.Count ?? 0}, CompletedGoals={CompletedGoals.Count}, GoalAchieved={GoalAchieved}");
 
             if (ShopLayout != null && ShopLayout.Count > 0)
                 OnShopLayoutAvailable?.Invoke();
 
             if (Milestones != null && Milestones.Count > 0)
                 OnMilestonesAvailable?.Invoke();
+
+            if (Goals != null && Goals.Count > 0)
+                OnGoalsAvailable?.Invoke();
 
             // Auto-reconnect if we have saved connection data
             if (!string.IsNullOrEmpty(_savedHost) && !string.IsNullOrEmpty(_savedSlot))
@@ -247,6 +295,19 @@ namespace ArchipelagoIntegration
                     }
                 }
             }
+
+            // Parse goal definitions from slot_data if we don't already have them
+            if ((Goals == null || Goals.Count == 0) && slotData != null)
+            {
+                Goals = ApGoalTracker.ParseGoalsFromSlotData(slotData);
+                GoalRequirement = ApGoalTracker.GetIntFromSlotData(slotData, "goal_requirement", 0);
+                PopulationMode = ApGoalTracker.GetIntFromSlotData(slotData, "population_mode", 0);
+                if (Goals.Count > 0)
+                {
+                    Debug.Log($"[Archipelago] Firing OnGoalsAvailable ({Goals.Count} goals)");
+                    OnGoalsAvailable?.Invoke();
+                }
+            }
         }
 
         public void Save(ISingletonSaver singletonSaver)
@@ -287,6 +348,15 @@ namespace ArchipelagoIntegration
                 saver.Set(ProgressiveChainsKey, SerializeProgressiveChains(ProgressiveChains));
             if (ProgressiveCounters.Count > 0)
                 saver.Set(ProgressiveCountersKey, SerializeProgressiveCounters(ProgressiveCounters));
+
+            // Persist goal data
+            if (Goals != null && Goals.Count > 0)
+                saver.Set(GoalsKey, SerializeGoals(Goals));
+            saver.Set(GoalRequirementKey, GoalRequirement);
+            saver.Set(PopulationModeKey, PopulationMode);
+            if (CompletedGoals.Count > 0)
+                saver.Set(CompletedGoalsKey, string.Join("|", CompletedGoals));
+            saver.Set(GoalAchievedKey, GoalAchieved ? 1 : 0);
         }
 
         /// <summary>
@@ -456,6 +526,32 @@ namespace ArchipelagoIntegration
                 var name = entry.Substring(0, colonIdx);
                 if (int.TryParse(entry.Substring(colonIdx + 1), out var count))
                     result[name] = count;
+            }
+            return result;
+        }
+
+        // -----------------------------------------------------------------
+        // Goal serialization
+        // Format: "Name,Threshold;Name2,Threshold2"
+        // -----------------------------------------------------------------
+
+        private static string SerializeGoals(List<GoalDefinition> goals)
+        {
+            return string.Join(";", goals.Select(g => $"{g.Name},{g.Threshold}"));
+        }
+
+        private static List<GoalDefinition> DeserializeGoals(string raw)
+        {
+            var result = new List<GoalDefinition>();
+            foreach (var entry in raw.Split(';'))
+            {
+                var parts = entry.Split(',');
+                if (parts.Length < 2) continue;
+                result.Add(new GoalDefinition
+                {
+                    Name = parts[0],
+                    Threshold = int.TryParse(parts[1], out var t) ? t : 0,
+                });
             }
             return result;
         }
