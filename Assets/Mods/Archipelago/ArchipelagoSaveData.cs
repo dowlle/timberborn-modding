@@ -340,25 +340,67 @@ namespace ArchipelagoIntegration
 
             try
             {
-                // Discover the faction ID via reflection — the exact API varies by game version
+                // Discover the faction ID via reflection — dump type info for diagnostics
+                var serviceType = _factionService.GetType();
+                Debug.Log($"[Archipelago] FactionService type: {serviceType.FullName}");
+
+                var allMethods = serviceType.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                var allProps = serviceType.GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                var allFields = serviceType.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+
+                Debug.Log($"[Archipelago] FactionService methods: {string.Join(", ", System.Linq.Enumerable.Select(allMethods, m => m.Name))}");
+                Debug.Log($"[Archipelago] FactionService properties: {string.Join(", ", System.Linq.Enumerable.Select(allProps, p => p.Name))}");
+                Debug.Log($"[Archipelago] FactionService fields: {string.Join(", ", System.Linq.Enumerable.Select(allFields, f => f.Name))}");
+
                 string gameFactionId = null;
 
-                // Try GetFaction() method first
-                var getFactionMethod = _factionService.GetType().GetMethod("GetFaction");
-                if (getFactionMethod != null)
+                // Try all properties that might contain faction info
+                foreach (var prop in allProps)
                 {
-                    var factionSpec = getFactionMethod.Invoke(_factionService, null);
-                    var idProp = factionSpec?.GetType().GetProperty("Id");
-                    if (idProp != null)
-                        gameFactionId = idProp.GetValue(factionSpec)?.ToString();
+                    try
+                    {
+                        var val = prop.GetValue(_factionService);
+                        if (val != null)
+                        {
+                            var valStr = val.ToString();
+                            Debug.Log($"[Archipelago] FactionService.{prop.Name} = {valStr} (type: {val.GetType().FullName})");
+
+                            // Check if this property's value contains faction info
+                            var idProp = val.GetType().GetProperty("Id");
+                            if (idProp != null)
+                            {
+                                var id = idProp.GetValue(val)?.ToString();
+                                Debug.Log($"[Archipelago] FactionService.{prop.Name}.Id = {id}");
+                                if (id != null && gameFactionId == null)
+                                    gameFactionId = id;
+                            }
+                        }
+                    }
+                    catch { /* skip unreadable properties */ }
                 }
 
-                // Try FactionId property as fallback
+                // Also try fields
                 if (gameFactionId == null)
                 {
-                    var factionIdProp = _factionService.GetType().GetProperty("FactionId");
-                    if (factionIdProp != null)
-                        gameFactionId = factionIdProp.GetValue(_factionService)?.ToString();
+                    foreach (var field in allFields)
+                    {
+                        try
+                        {
+                            var val = field.GetValue(_factionService);
+                            if (val != null)
+                            {
+                                var idProp = val.GetType().GetProperty("Id");
+                                if (idProp != null)
+                                {
+                                    var id = idProp.GetValue(val)?.ToString();
+                                    Debug.Log($"[Archipelago] FactionService._{field.Name}.Id = {id}");
+                                    if (id != null)
+                                        gameFactionId = id;
+                                }
+                            }
+                        }
+                        catch { /* skip unreadable fields */ }
+                    }
                 }
 
                 if (gameFactionId == null)
