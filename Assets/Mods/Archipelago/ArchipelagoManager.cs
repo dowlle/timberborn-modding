@@ -45,6 +45,8 @@ namespace ArchipelagoIntegration
     {
         // ------------------------------------------------------------------ state
         public static bool   IsConnected  { get; private set; }
+        /// <summary>Set to true when connection is blocked (e.g. faction mismatch). Prevents reconnection.</summary>
+        public static bool   ConnectionBlocked { get; set; }
         public static string CurrentSlot  { get; private set; }
         public static string CurrentSeed  { get; private set; }
         public static string CurrentHost  { get; private set; }
@@ -86,6 +88,13 @@ namespace ArchipelagoIntegration
         public static LoginResult Connect(string host, int port, string slotName,
                                           string password = "")
         {
+            if (ConnectionBlocked)
+            {
+                Debug.LogWarning("[Archipelago] Connection blocked — cannot reconnect.");
+                OnConnectionChanged?.Invoke(false, "Connection blocked. Start a new game with the correct faction.");
+                return null;
+            }
+
             Disconnect();
 
             _session = ArchipelagoSessionFactory.CreateSession(host, port);

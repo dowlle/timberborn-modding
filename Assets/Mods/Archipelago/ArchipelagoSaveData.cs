@@ -370,8 +370,9 @@ namespace ArchipelagoIntegration
                     ArchipelagoManager.PostLogMessage("=== FACTION MISMATCH ===");
                     ArchipelagoManager.PostLogMessage(msg);
                     ArchipelagoManager.PostLogMessage("Please start a new game with the correct faction.");
-                    // Block reconnection and disconnect with a descriptive status message
+                    // Block reconnection globally and disconnect with a descriptive status message
                     _connectionBlocked = true;
+                    ArchipelagoManager.ConnectionBlocked = true;
                     ArchipelagoManager.DisconnectWithReason(msg);
                     return false;
                 }
