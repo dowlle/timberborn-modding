@@ -6,7 +6,6 @@ using Newtonsoft.Json.Linq;
 using Timberborn.GameWonderCompletion;
 using Timberborn.HazardousWeatherSystem;
 using Timberborn.Population;
-using Timberborn.Goods;
 using Timberborn.ResourceCountingSystem;
 using Timberborn.SingletonSystem;
 using Timberborn.Wellbeing;
@@ -242,10 +241,37 @@ namespace ArchipelagoIntegration
         {
             try
             {
-                var waterGoodId = new GoodId("Water");
-                var resourceCount = _resourceCountingService.GetGlobalResourceCount(waterGoodId);
-                int stock = (int)resourceCount.AllStock;
-                return stock >= threshold;
+                // GoodId may be a struct/record — construct via reflection
+                var goodIdType = typeof(ResourceCountingService).Assembly
+                    .GetType("Timberborn.Goods.GoodId")
+                    ?? Type.GetType("Timberborn.Goods.GoodId, Timberborn.Goods");
+
+                if (goodIdType == null)
+                {
+                    Debug.LogWarning("[Archipelago] Could not find GoodId type");
+                    return false;
+                }
+
+                var waterGoodId = Activator.CreateInstance(goodIdType, "Water");
+
+                // Call GetGlobalResourceCount via reflection since we can't reference GoodId directly
+                var method = _resourceCountingService.GetType().GetMethod("GetGlobalResourceCount");
+                if (method == null)
+                {
+                    Debug.LogWarning("[Archipelago] Could not find GetGlobalResourceCount method");
+                    return false;
+                }
+
+                var resourceCount = method.Invoke(_resourceCountingService, new[] { waterGoodId });
+                var allStockProp = resourceCount.GetType().GetProperty("AllStock");
+                if (allStockProp == null)
+                {
+                    Debug.LogWarning("[Archipelago] Could not find AllStock property on ResourceCount");
+                    return false;
+                }
+
+                var allStock = Convert.ToInt32(allStockProp.GetValue(resourceCount));
+                return allStock >= threshold;
             }
             catch (Exception ex)
             {

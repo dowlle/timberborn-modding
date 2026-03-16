@@ -329,8 +329,8 @@ namespace ArchipelagoIntegration
 
             try
             {
-                // FactionService.FactionId returns the current in-game faction identifier
-                var gameFactionId = _factionService.FactionId.ToString();
+                // FactionService.GetFaction() returns the current faction spec
+                var gameFactionId = _factionService.GetFaction().Id.ToString();
 
                 if (!string.Equals(gameFactionId, expectedFaction, StringComparison.OrdinalIgnoreCase))
                 {
