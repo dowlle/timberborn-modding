@@ -43,6 +43,8 @@ namespace ArchipelagoIntegration
         private static readonly PropertyKey<int> SkipsAvailableKey = new("SkipsAvailable");
         private static readonly PropertyKey<string> MilestonesKey = new("Milestones");
         private static readonly PropertyKey<string> CheckedMilestonesKey = new("CheckedMilestones");
+        private static readonly PropertyKey<string> ProgressiveChainsKey = new("ProgressiveChains");
+        private static readonly PropertyKey<string> ProgressiveCountersKey = new("ProgressiveCounters");
 
         /// <summary>Fired when ShopLayout becomes available (from save or slot_data).</summary>
         public static event Action OnShopLayoutAvailable;
@@ -83,6 +85,18 @@ namespace ArchipelagoIntegration
 
         /// <summary>AP location IDs of milestones already checked.</summary>
         public HashSet<long> CheckedMilestoneIds { get; } = new();
+
+        /// <summary>
+        /// Progressive item chains from slot_data.
+        /// Maps progressive item name → ordered list of building names.
+        /// </summary>
+        public Dictionary<string, List<string>> ProgressiveChains { get; private set; } = new();
+
+        /// <summary>
+        /// Tracks how many times each progressive item has been received.
+        /// Persisted so reconnects don't double-unlock buildings.
+        /// </summary>
+        public Dictionary<string, int> ProgressiveCounters { get; private set; } = new();
 
         public ArchipelagoSaveData(ISingletonLoader singletonLoader)
         {
@@ -153,10 +167,25 @@ namespace ArchipelagoIntegration
                             CheckedMilestoneIds.Add(lid);
             }
 
+            // Restore progressive chains and counters
+            if (loader.Has(ProgressiveChainsKey))
+            {
+                var raw = loader.Get(ProgressiveChainsKey);
+                if (!string.IsNullOrEmpty(raw))
+                    ProgressiveChains = DeserializeProgressiveChains(raw);
+            }
+            if (loader.Has(ProgressiveCountersKey))
+            {
+                var raw = loader.Get(ProgressiveCountersKey);
+                if (!string.IsNullOrEmpty(raw))
+                    ProgressiveCounters = DeserializeProgressiveCounters(raw);
+            }
+
             Debug.Log($"[Archipelago] Loaded save data: ProcessedItemIndex={ArchipelagoManager.ProcessedItemIndex}, " +
                       $"CheckedLocs={CheckedLocations.Count}, ReceivedItems={ReceivedItems.Count}, " +
                       $"ShopSlots={ShopLayout?.Count ?? 0}, Skips={SkipsAvailable}, " +
-                      $"Milestones={Milestones?.Count ?? 0}, CheckedMilestones={CheckedMilestoneIds.Count}");
+                      $"Milestones={Milestones?.Count ?? 0}, CheckedMilestones={CheckedMilestoneIds.Count}, " +
+                      $"ProgressiveChains={ProgressiveChains.Count}");
 
             if (ShopLayout != null && ShopLayout.Count > 0)
                 OnShopLayoutAvailable?.Invoke();
@@ -192,6 +221,16 @@ namespace ArchipelagoIntegration
                 else
                 {
                     Debug.LogWarning("[Archipelago] ShopLayout still empty after LoadFromSlotData");
+                }
+            }
+
+            // Parse progressive chains from slot_data if we don't already have them
+            if (ProgressiveChains.Count == 0 && slotData != null)
+            {
+                if (slotData.TryGetValue("progressive_chains", out var chainsObj))
+                {
+                    ProgressiveChains = ParseProgressiveChainsFromSlotData(chainsObj);
+                    Debug.Log($"[Archipelago] Parsed {ProgressiveChains.Count} progressive chains from slot_data");
                 }
             }
 
@@ -242,6 +281,12 @@ namespace ArchipelagoIntegration
                 saver.Set(MilestonesKey, SerializeMilestones(Milestones));
             if (CheckedMilestoneIds.Count > 0)
                 saver.Set(CheckedMilestonesKey, string.Join("|", CheckedMilestoneIds));
+
+            // Persist progressive chains and counters
+            if (ProgressiveChains.Count > 0)
+                saver.Set(ProgressiveChainsKey, SerializeProgressiveChains(ProgressiveChains));
+            if (ProgressiveCounters.Count > 0)
+                saver.Set(ProgressiveCountersKey, SerializeProgressiveCounters(ProgressiveCounters));
         }
 
         /// <summary>
@@ -368,6 +413,81 @@ namespace ArchipelagoIntegration
                     Threshold = int.Parse(parts[3]),
                 });
             }
+            return result;
+        }
+
+        // -----------------------------------------------------------------
+        // Progressive chains serialization
+        // Format: "ProgName:Building1,Building2,Building3;ProgName2:B1,B2"
+        // -----------------------------------------------------------------
+
+        private static string SerializeProgressiveChains(Dictionary<string, List<string>> chains)
+        {
+            return string.Join(";", chains.Select(kvp =>
+                $"{kvp.Key}:{string.Join(",", kvp.Value)}"));
+        }
+
+        private static Dictionary<string, List<string>> DeserializeProgressiveChains(string raw)
+        {
+            var result = new Dictionary<string, List<string>>();
+            foreach (var entry in raw.Split(';'))
+            {
+                var colonIdx = entry.IndexOf(':');
+                if (colonIdx < 0) continue;
+                var name = entry.Substring(0, colonIdx);
+                var buildings = entry.Substring(colonIdx + 1).Split(',').ToList();
+                result[name] = buildings;
+            }
+            return result;
+        }
+
+        private static string SerializeProgressiveCounters(Dictionary<string, int> counters)
+        {
+            return string.Join(";", counters.Select(kvp => $"{kvp.Key}:{kvp.Value}"));
+        }
+
+        private static Dictionary<string, int> DeserializeProgressiveCounters(string raw)
+        {
+            var result = new Dictionary<string, int>();
+            foreach (var entry in raw.Split(';'))
+            {
+                var colonIdx = entry.IndexOf(':');
+                if (colonIdx < 0) continue;
+                var name = entry.Substring(0, colonIdx);
+                if (int.TryParse(entry.Substring(colonIdx + 1), out var count))
+                    result[name] = count;
+            }
+            return result;
+        }
+
+        private static Dictionary<string, List<string>> ParseProgressiveChainsFromSlotData(object chainsObj)
+        {
+            var result = new Dictionary<string, List<string>>();
+
+            // Try JObject (dict-like)
+            if (chainsObj is Newtonsoft.Json.Linq.JObject jObj)
+            {
+                foreach (var prop in jObj.Properties())
+                {
+                    if (prop.Value is Newtonsoft.Json.Linq.JArray arr)
+                        result[prop.Name] = arr.Select(t => t.ToString()).ToList();
+                }
+                return result;
+            }
+
+            // Try as JToken
+            if (chainsObj is Newtonsoft.Json.Linq.JToken jToken && jToken.Type == Newtonsoft.Json.Linq.JTokenType.Object)
+            {
+                foreach (var prop in ((Newtonsoft.Json.Linq.JObject)jToken).Properties())
+                {
+                    if (prop.Value is Newtonsoft.Json.Linq.JArray arr)
+                        result[prop.Name] = arr.Select(t => t.ToString()).ToList();
+                }
+                return result;
+            }
+
+            Debug.LogWarning($"[Archipelago] Cannot parse progressive_chains: " +
+                             $"expected JObject, got {chainsObj?.GetType().FullName}");
             return result;
         }
     }

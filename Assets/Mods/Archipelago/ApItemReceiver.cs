@@ -85,6 +85,52 @@ namespace ArchipelagoIntegration
                 return;
             }
 
+            // Handle progressive items — resolve to the next building in the chain
+            if (_saveData.ProgressiveChains.TryGetValue(item.ItemName, out var chain))
+            {
+                if (!_saveData.ProgressiveCounters.ContainsKey(item.ItemName))
+                    _saveData.ProgressiveCounters[item.ItemName] = 0;
+
+                int idx = _saveData.ProgressiveCounters[item.ItemName];
+                _saveData.ProgressiveCounters[item.ItemName]++;
+
+                if (idx < chain.Count)
+                {
+                    var buildingName = chain[idx];
+                    var blueprintName = $"Blueprint: {buildingName}";
+                    // Also track the resolved blueprint name for any code checking specific buildings
+                    _saveData.ReceivedItems.Add(blueprintName);
+
+                    if (_itemNameToSpec.TryGetValue(blueprintName, out var progSpec))
+                    {
+                        _apUnlocking.Add(progSpec);
+                        try
+                        {
+                            _buildingUnlockingService.UnlockIgnoringCost(progSpec);
+                            Debug.Log($"[Archipelago] Progressive unlock: {item.ItemName} → {buildingName} (from {item.SenderName})");
+                            ArchipelagoManager.PostLogMessage($"Received {item.ItemName} ({buildingName}) from {item.SenderName}");
+                        }
+                        catch (Exception ex)
+                        {
+                            Debug.LogError($"[Archipelago] Unlock THREW for {item.ItemName} → {buildingName}: {ex}");
+                        }
+                        finally
+                        {
+                            _apUnlocking.Remove(progSpec);
+                        }
+                    }
+                    else
+                    {
+                        Debug.LogWarning($"[Archipelago] Progressive chain building not found: {blueprintName}");
+                    }
+                }
+                else
+                {
+                    Debug.LogWarning($"[Archipelago] Progressive item {item.ItemName} received beyond chain length ({idx} >= {chain.Count})");
+                }
+                return;
+            }
+
             if (_itemNameToSpec.TryGetValue(item.ItemName, out var spec))
             {
                 _apUnlocking.Add(spec);
