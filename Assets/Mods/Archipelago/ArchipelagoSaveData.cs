@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Timberborn.GameFactionSystem;
 using Timberborn.Persistence;
 using Timberborn.SingletonSystem;
 using Timberborn.WorldPersistence;
@@ -61,6 +62,7 @@ namespace ArchipelagoIntegration
         public static event Action OnGoalsAvailable;
 
         private readonly ISingletonLoader _singletonLoader;
+        private readonly FactionService _factionService;
 
         private string _savedHost;
         private int _savedPort;
@@ -121,9 +123,10 @@ namespace ArchipelagoIntegration
         /// <summary>Whether the overall goal has been achieved (sent to server).</summary>
         public bool GoalAchieved { get; set; }
 
-        public ArchipelagoSaveData(ISingletonLoader singletonLoader)
+        public ArchipelagoSaveData(ISingletonLoader singletonLoader, FactionService factionService)
         {
             _singletonLoader = singletonLoader;
+            _factionService = factionService;
         }
 
         public void Load()
@@ -253,9 +256,12 @@ namespace ArchipelagoIntegration
         {
             if (!connected) return;
 
-            Debug.Log($"[Archipelago] SaveData.OnConnectionChanged — ShopLayout null={ShopLayout == null}, count={ShopLayout?.Count ?? -1}");
-
+            // Validate faction before processing slot_data
             var slotData = ArchipelagoManager.SlotData;
+            if (!ValidateFaction(slotData))
+                return;
+
+            Debug.Log($"[Archipelago] SaveData.OnConnectionChanged — ShopLayout null={ShopLayout == null}, count={ShopLayout?.Count ?? -1}");
 
             // Parse shop layout from slot_data if we don't already have one
             if (ShopLayout == null || ShopLayout.Count == 0)
@@ -308,6 +314,43 @@ namespace ArchipelagoIntegration
                     OnGoalsAvailable?.Invoke();
                 }
             }
+        }
+
+        /// <summary>
+        /// Validates that the in-game faction matches the server-expected faction.
+        /// Returns true if valid, false if mismatched (disconnects on mismatch).
+        /// </summary>
+        private bool ValidateFaction(Dictionary<string, object> slotData)
+        {
+            if (slotData == null) return true;
+            if (!slotData.TryGetValue("faction", out var factionObj)) return true;
+
+            var expectedFaction = factionObj?.ToString() ?? "Folktails";
+
+            try
+            {
+                // FactionService.FactionId returns the current in-game faction identifier
+                var gameFactionId = _factionService.FactionId.ToString();
+
+                if (!string.Equals(gameFactionId, expectedFaction, StringComparison.OrdinalIgnoreCase))
+                {
+                    var msg = $"Connection blocked: You are playing as {gameFactionId} " +
+                              $"but your YAML requires {expectedFaction}. " +
+                              $"Please start a new game with the correct faction.";
+                    Debug.LogError($"[Archipelago] {msg}");
+                    ArchipelagoManager.PostLogMessage(msg);
+                    ArchipelagoManager.Disconnect();
+                    return false;
+                }
+
+                Debug.Log($"[Archipelago] Faction validated: {gameFactionId} matches slot_data");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[Archipelago] Could not validate faction: {ex.Message}. Proceeding anyway.");
+            }
+
+            return true;
         }
 
         public void Save(ISingletonSaver singletonSaver)
