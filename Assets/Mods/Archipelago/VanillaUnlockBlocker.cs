@@ -1,5 +1,7 @@
+using System;
 using System.Reflection;
 using Timberborn.Buildings;
+using Timberborn.FactionSystem;
 using Timberborn.SingletonSystem;
 using Timberborn.TemplateSystem;
 using UnityEngine;
@@ -15,14 +17,29 @@ namespace ArchipelagoIntegration
     public class VanillaUnlockBlocker : ILoadableSingleton
     {
         private readonly TemplateNameMapper _templateNameMapper;
+        private readonly FactionUnlockingService _factionUnlockingService;
 
-        public VanillaUnlockBlocker(TemplateNameMapper templateNameMapper)
+        public VanillaUnlockBlocker(TemplateNameMapper templateNameMapper,
+                                    FactionUnlockingService factionUnlockingService)
         {
             _templateNameMapper = templateNameMapper;
+            _factionUnlockingService = factionUnlockingService;
         }
 
         public void Load()
         {
+            // Auto-unlock all factions so players don't need vanilla well-being 8
+            // to access Iron Teeth for AP games
+            try
+            {
+                _factionUnlockingService.UnlockAllFactions();
+                Debug.Log("[Archipelago] All factions unlocked for Archipelago play");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[Archipelago] Could not auto-unlock factions: {ex.Message}");
+            }
+
             string faction = ApBuildingLocations.GetFaction();
             int blocked = 0;
             foreach (var entry in ApBuildingLocations.GetEntries(faction))
