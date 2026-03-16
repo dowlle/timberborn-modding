@@ -399,6 +399,7 @@ namespace ArchipelagoIntegration
 
         private void OnConnectionChanged(bool connected, string message)
         {
+            Debug.Log($"[Archipelago] ShopPanel.OnConnectionChanged: connected={connected}, message={message}");
             if (_connectionStatusLabel != null)
                 _connectionStatusLabel.text = message;
             UpdateConnectionButtons();
