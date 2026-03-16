@@ -6,6 +6,8 @@ using Newtonsoft.Json.Linq;
 using Timberborn.GameWonderCompletion;
 using Timberborn.HazardousWeatherSystem;
 using Timberborn.Population;
+using Timberborn.Goods;
+using Timberborn.ResourceCountingSystem;
 using Timberborn.SingletonSystem;
 using Timberborn.Wellbeing;
 using UnityEngine;
@@ -36,6 +38,7 @@ namespace ArchipelagoIntegration
         private readonly WellbeingService _wellbeingService;
         private readonly HazardousWeatherHistory _weatherHistory;
         private readonly GameWonderCompletionService _wonderService;
+        private readonly ResourceCountingService _resourceCountingService;
         private readonly ArchipelagoSaveData _saveData;
 
         private List<GoalDefinition> _goals = new();
@@ -56,12 +59,14 @@ namespace ArchipelagoIntegration
             WellbeingService wellbeingService,
             HazardousWeatherHistory weatherHistory,
             GameWonderCompletionService wonderService,
+            ResourceCountingService resourceCountingService,
             ArchipelagoSaveData saveData)
         {
             _populationService = populationService;
             _wellbeingService = wellbeingService;
             _weatherHistory = weatherHistory;
             _wonderService = wonderService;
+            _resourceCountingService = resourceCountingService;
             _saveData = saveData;
         }
 
@@ -173,11 +178,9 @@ namespace ArchipelagoIntegration
                 case "Well-being":
                     return EvaluateWellbeing(goal.Threshold);
                 case "Bots":
-                    // TODO: Need bot count service — stub for now
-                    return false;
+                    return EvaluateBots(goal.Threshold);
                 case "Water Storage":
-                    // TODO: Need water storage service — stub for now
-                    return false;
+                    return EvaluateWaterStorage(goal.Threshold);
                 default:
                     Debug.LogWarning($"[Archipelago] Unknown goal type: {goal.Name}");
                     return false;
@@ -227,19 +230,28 @@ namespace ArchipelagoIntegration
 
         private int GetBotCount()
         {
-            // TODO: Find the correct service for bot count.
-            // GlobalPopulationData may not have NumberOfBots — bots use a
-            // separate system in Timberborn. Return 0 until we find the
-            // right service to query.
+            return _populationService.GlobalPopulationData.NumberOfBots;
+        }
+
+        private bool EvaluateBots(int threshold)
+        {
+            return GetBotCount() >= threshold;
+        }
+
+        private bool EvaluateWaterStorage(int threshold)
+        {
             try
             {
-                var popData = _populationService.GlobalPopulationData;
-                var prop = popData.GetType().GetProperty("NumberOfBots");
-                if (prop != null)
-                    return (int)prop.GetValue(popData);
+                var waterGoodId = new GoodId("Water");
+                var resourceCount = _resourceCountingService.GetGlobalResourceCount(waterGoodId);
+                int stock = (int)resourceCount.AllStock;
+                return stock >= threshold;
             }
-            catch { /* reflection failed — bots not available */ }
-            return 0;
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[Archipelago] Water storage check failed: {ex.Message}");
+                return false;
+            }
         }
 
         private bool EvaluateDroughts(int threshold)
