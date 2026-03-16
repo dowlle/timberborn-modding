@@ -341,68 +341,17 @@ namespace ArchipelagoIntegration
 
             try
             {
-                // Discover the faction ID via reflection — dump type info for diagnostics
-                var serviceType = _factionService.GetType();
-                Debug.Log($"[Archipelago] FactionService type: {serviceType.FullName}");
-
-                var allMethods = serviceType.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                var allProps = serviceType.GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                var allFields = serviceType.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-
-                Debug.Log($"[Archipelago] FactionService methods: {string.Join(", ", System.Linq.Enumerable.Select(allMethods, m => m.Name))}");
-                Debug.Log($"[Archipelago] FactionService properties: {string.Join(", ", System.Linq.Enumerable.Select(allProps, p => p.Name))}");
-                Debug.Log($"[Archipelago] FactionService fields: {string.Join(", ", System.Linq.Enumerable.Select(allFields, f => f.Name))}");
-
-                string gameFactionId = null;
-
-                // Try all properties that might contain faction info
-                foreach (var prop in allProps)
+                // FactionService.Current returns the FactionSpec with an Id property
+                var currentProp = _factionService.GetType().GetProperty("Current");
+                if (currentProp == null)
                 {
-                    try
-                    {
-                        var val = prop.GetValue(_factionService);
-                        if (val != null)
-                        {
-                            var valStr = val.ToString();
-                            Debug.Log($"[Archipelago] FactionService.{prop.Name} = {valStr} (type: {val.GetType().FullName})");
-
-                            // Check if this property's value contains faction info
-                            var idProp = val.GetType().GetProperty("Id");
-                            if (idProp != null)
-                            {
-                                var id = idProp.GetValue(val)?.ToString();
-                                Debug.Log($"[Archipelago] FactionService.{prop.Name}.Id = {id}");
-                                if (id != null && gameFactionId == null)
-                                    gameFactionId = id;
-                            }
-                        }
-                    }
-                    catch { /* skip unreadable properties */ }
+                    Debug.LogWarning("[Archipelago] FactionService.Current not found. Skipping faction validation.");
+                    return true;
                 }
 
-                // Also try fields
-                if (gameFactionId == null)
-                {
-                    foreach (var field in allFields)
-                    {
-                        try
-                        {
-                            var val = field.GetValue(_factionService);
-                            if (val != null)
-                            {
-                                var idProp = val.GetType().GetProperty("Id");
-                                if (idProp != null)
-                                {
-                                    var id = idProp.GetValue(val)?.ToString();
-                                    Debug.Log($"[Archipelago] FactionService._{field.Name}.Id = {id}");
-                                    if (id != null)
-                                        gameFactionId = id;
-                                }
-                            }
-                        }
-                        catch { /* skip unreadable fields */ }
-                    }
-                }
+                var factionSpec = currentProp.GetValue(_factionService);
+                var idProp = factionSpec?.GetType().GetProperty("Id");
+                var gameFactionId = idProp?.GetValue(factionSpec)?.ToString();
 
                 if (gameFactionId == null)
                 {
@@ -412,12 +361,13 @@ namespace ArchipelagoIntegration
 
                 if (!string.Equals(gameFactionId, expectedFaction, StringComparison.OrdinalIgnoreCase))
                 {
-                    var msg = $"Connection blocked: You are playing as {gameFactionId} " +
-                              $"but your YAML requires {expectedFaction}. " +
-                              $"Please start a new game with the correct faction.";
+                    var msg = $"Wrong faction! Playing as {gameFactionId}, YAML requires {expectedFaction}.";
                     Debug.LogError($"[Archipelago] {msg}");
+                    ArchipelagoManager.PostLogMessage("=== FACTION MISMATCH ===");
                     ArchipelagoManager.PostLogMessage(msg);
-                    ArchipelagoManager.Disconnect();
+                    ArchipelagoManager.PostLogMessage("Please start a new game with the correct faction.");
+                    // Disconnect with a descriptive status message (shown in shop panel)
+                    ArchipelagoManager.DisconnectWithReason(msg);
                     return false;
                 }
 

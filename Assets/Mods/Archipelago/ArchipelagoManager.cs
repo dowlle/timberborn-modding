@@ -129,6 +129,12 @@ namespace ArchipelagoIntegration
 
         public static void Disconnect()
         {
+            DisconnectWithReason("Disconnected");
+        }
+
+        /// <summary>Disconnect with a custom reason shown in the shop panel status.</summary>
+        public static void DisconnectWithReason(string reason)
+        {
             if (_session == null) return;
 
             _session.Items.ItemReceived  -= OnNetworkItemReceived;
@@ -144,9 +150,9 @@ namespace ArchipelagoIntegration
             CurrentSeed  = null;
             SlotData     = null;
 
-            Debug.Log("[Archipelago] Disconnected.");
-            _pendingMessages.Enqueue("Disconnected");
-            OnConnectionChanged?.Invoke(false, "Disconnected");
+            Debug.Log($"[Archipelago] {reason}");
+            _pendingMessages.Enqueue(reason);
+            OnConnectionChanged?.Invoke(false, reason);
         }
 
         // ------------------------------------------------------------------ sending
