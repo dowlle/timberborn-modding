@@ -58,6 +58,7 @@ namespace ArchipelagoIntegration
         public void Unload()
         {
             ArchipelagoManager.OnLogMessage -= AddMessage;
+            _root?.RemoveFromHierarchy();
         }
 
         private void AddMessage(string text)
