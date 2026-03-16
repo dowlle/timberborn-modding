@@ -151,8 +151,16 @@ namespace ArchipelagoIntegration
             }
             else
             {
-                Debug.Log($"[Archipelago] Received non-blueprint item: {item.ItemName} (from {item.SenderName})");
-                ArchipelagoManager.PostLogMessage($"Received {item.ItemName} from {item.SenderName}");
+                // Route non-blueprint items (filler, traps, boosts) to effect handler
+                if (ApEffectHandler.Instance != null)
+                {
+                    ApEffectHandler.Instance.HandleEffect(item);
+                }
+                else
+                {
+                    Debug.Log($"[Archipelago] Received non-blueprint item: {item.ItemName} (from {item.SenderName})");
+                    ArchipelagoManager.PostLogMessage($"Received {item.ItemName} from {item.SenderName}");
+                }
             }
         }
 

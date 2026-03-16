@@ -51,6 +51,7 @@ namespace ArchipelagoIntegration
         private static readonly PropertyKey<int> PopulationModeKey = new("PopulationMode");
         private static readonly PropertyKey<string> CompletedGoalsKey = new("CompletedGoals");
         private static readonly PropertyKey<int> GoalAchievedKey = new("GoalAchieved");
+        private static readonly PropertyKey<string> ActiveBoostsKey = new("ActiveBoosts");
 
         /// <summary>Fired when ShopLayout becomes available (from save or slot_data).</summary>
         public static event Action OnShopLayoutAvailable;
@@ -122,6 +123,9 @@ namespace ArchipelagoIntegration
 
         /// <summary>Whether the overall goal has been achieved (sent to server).</summary>
         public bool GoalAchieved { get; set; }
+
+        /// <summary>Active boost names, persisted so they survive save/load and re-apply on game start.</summary>
+        public HashSet<string> ActiveBoosts { get; } = new();
 
         public ArchipelagoSaveData(ISingletonLoader singletonLoader, FactionService factionService)
         {
@@ -227,6 +231,13 @@ namespace ArchipelagoIntegration
             }
             if (loader.Has(GoalAchievedKey))
                 GoalAchieved = loader.Get(GoalAchievedKey) == 1;
+            if (loader.Has(ActiveBoostsKey))
+            {
+                var raw = loader.Get(ActiveBoostsKey);
+                if (!string.IsNullOrEmpty(raw))
+                    foreach (var b in raw.Split('|'))
+                        ActiveBoosts.Add(b);
+            }
 
             Debug.Log($"[Archipelago] Loaded save data: ProcessedItemIndex={ArchipelagoManager.ProcessedItemIndex}, " +
                       $"CheckedLocs={CheckedLocations.Count}, ReceivedItems={ReceivedItems.Count}, " +
@@ -424,6 +435,8 @@ namespace ArchipelagoIntegration
             if (CompletedGoals.Count > 0)
                 saver.Set(CompletedGoalsKey, string.Join("|", CompletedGoals));
             saver.Set(GoalAchievedKey, GoalAchieved ? 1 : 0);
+            if (ActiveBoosts.Count > 0)
+                saver.Set(ActiveBoostsKey, string.Join("|", ActiveBoosts));
         }
 
         /// <summary>

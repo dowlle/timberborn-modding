@@ -25,6 +25,9 @@ namespace ArchipelagoIntegration
             // Goal tracking (modular victory conditions)
             Bind<ApGoalTracker>().AsSingleton();
 
+            // Effect handling (filler, traps, boosts)
+            Bind<ApEffectHandler>().AsSingleton();
+
             // AP Shop (tiered location check panel)
             Bind<ApShopPanel>().AsSingleton();
             Bind<ApShopTool>().AsSingleton();
