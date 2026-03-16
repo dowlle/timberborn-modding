@@ -128,18 +128,34 @@ namespace ArchipelagoIntegration
         {
             try
             {
-                // StartHazardousWeather triggers the next hazardous weather event
-                var method = _hazardousWeatherService.GetType().GetMethod(
-                    "StartHazardousWeather",
-                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                // Force the weather type before triggering:
+                // HazardousWeatherService has _droughtWeather and _badtideWeather fields
+                // and a CurrentCycleHazardousWeather property we can set
+                var serviceType = _hazardousWeatherService.GetType();
+                var flags = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
 
-                if (method == null)
+                string fieldName = type == "badtide" ? "_badtideWeather" : "_droughtWeather";
+                var weatherField = serviceType.GetField(fieldName, flags);
+                if (weatherField != null)
+                {
+                    var weatherInstance = weatherField.GetValue(_hazardousWeatherService);
+                    var setCurrent = serviceType.GetProperty("CurrentCycleHazardousWeather", flags);
+                    if (setCurrent != null && weatherInstance != null)
+                    {
+                        setCurrent.SetValue(_hazardousWeatherService, weatherInstance);
+                        Debug.Log($"[Archipelago] Set CurrentCycleHazardousWeather to {type}");
+                    }
+                }
+
+                // Now trigger it
+                var startMethod = serviceType.GetMethod("StartHazardousWeather", flags);
+                if (startMethod == null)
                 {
                     Debug.LogWarning("[Archipelago] Could not find StartHazardousWeather method");
                     return;
                 }
 
-                method.Invoke(_hazardousWeatherService, null);
+                startMethod.Invoke(_hazardousWeatherService, null);
                 Debug.Log($"[Archipelago] Triggered hazardous weather ({type})");
                 ArchipelagoManager.PostLogMessage($"Trap activated: {type} incoming!");
             }
