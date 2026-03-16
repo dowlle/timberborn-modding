@@ -66,6 +66,9 @@ namespace ArchipelagoIntegration
         private readonly ISingletonLoader _singletonLoader;
         private readonly FactionService _factionService;
 
+        /// <summary>Set to true when connection is blocked (e.g. faction mismatch) to prevent auto-reconnect loops.</summary>
+        private bool _connectionBlocked;
+
         private string _savedHost;
         private int _savedPort;
         private string _savedSlot;
@@ -256,8 +259,8 @@ namespace ArchipelagoIntegration
             if (Goals != null && Goals.Count > 0)
                 OnGoalsAvailable?.Invoke();
 
-            // Auto-reconnect if we have saved connection data
-            if (!string.IsNullOrEmpty(_savedHost) && !string.IsNullOrEmpty(_savedSlot))
+            // Auto-reconnect if we have saved connection data (unless blocked by validation)
+            if (!_connectionBlocked && !string.IsNullOrEmpty(_savedHost) && !string.IsNullOrEmpty(_savedSlot))
             {
                 Debug.Log($"[Archipelago] Attempting auto-reconnect to {_savedHost}:{_savedPort} as '{_savedSlot}'...");
                 ArchipelagoManager.Connect(_savedHost, _savedPort, _savedSlot);
@@ -267,6 +270,7 @@ namespace ArchipelagoIntegration
         private void OnConnectionChanged(bool connected, string message)
         {
             if (!connected) return;
+            if (_connectionBlocked) return;
 
             // Validate faction before processing slot_data
             var slotData = ArchipelagoManager.SlotData;
@@ -366,7 +370,8 @@ namespace ArchipelagoIntegration
                     ArchipelagoManager.PostLogMessage("=== FACTION MISMATCH ===");
                     ArchipelagoManager.PostLogMessage(msg);
                     ArchipelagoManager.PostLogMessage("Please start a new game with the correct faction.");
-                    // Disconnect with a descriptive status message (shown in shop panel)
+                    // Block reconnection and disconnect with a descriptive status message
+                    _connectionBlocked = true;
                     ArchipelagoManager.DisconnectWithReason(msg);
                     return false;
                 }
