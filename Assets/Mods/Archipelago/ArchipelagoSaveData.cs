@@ -329,8 +329,32 @@ namespace ArchipelagoIntegration
 
             try
             {
-                // FactionService.GetFaction() returns the current faction spec
-                var gameFactionId = _factionService.GetFaction().Id.ToString();
+                // Discover the faction ID via reflection — the exact API varies by game version
+                string gameFactionId = null;
+
+                // Try GetFaction() method first
+                var getFactionMethod = _factionService.GetType().GetMethod("GetFaction");
+                if (getFactionMethod != null)
+                {
+                    var factionSpec = getFactionMethod.Invoke(_factionService, null);
+                    var idProp = factionSpec?.GetType().GetProperty("Id");
+                    if (idProp != null)
+                        gameFactionId = idProp.GetValue(factionSpec)?.ToString();
+                }
+
+                // Try FactionId property as fallback
+                if (gameFactionId == null)
+                {
+                    var factionIdProp = _factionService.GetType().GetProperty("FactionId");
+                    if (factionIdProp != null)
+                        gameFactionId = factionIdProp.GetValue(_factionService)?.ToString();
+                }
+
+                if (gameFactionId == null)
+                {
+                    Debug.LogWarning("[Archipelago] Could not determine in-game faction. Skipping validation.");
+                    return true;
+                }
 
                 if (!string.Equals(gameFactionId, expectedFaction, StringComparison.OrdinalIgnoreCase))
                 {
