@@ -15,11 +15,12 @@ namespace ArchipelagoIntegration
     /// </summary>
     public class ShopSlot
     {
-        public string Path;      // "A", "B", "C", "D"
-        public int    Level;     // position within path (0-based)
+        public string Path;         // "A", "B", "C", "D"
+        public int    Level;        // position within path (0-based)
         public long   LocationId;
-        public int    Price;     // science cost
-        public int    Tier;      // tier gate (1-5)
+        public int    Price;        // science cost
+        public int    Tier;         // tier gate (1-5)
+        public string BuildingName; // building display name (for scouted reveal)
     }
 
     /// <summary>
@@ -53,6 +54,7 @@ namespace ArchipelagoIntegration
         private static readonly PropertyKey<string> CompletedGoalsKey = new("CompletedGoals");
         private static readonly PropertyKey<int> GoalAchievedKey = new("GoalAchieved");
         private static readonly PropertyKey<string> ActiveBoostsKey = new("ActiveBoosts");
+        private static readonly PropertyKey<string> ScoutedPathsKey = new("ScoutedPaths");
 
         /// <summary>Fired when ShopLayout becomes available (from save or slot_data).</summary>
         public static event Action OnShopLayoutAvailable;
@@ -131,6 +133,9 @@ namespace ArchipelagoIntegration
         /// <summary>Active boost names, persisted so they survive save/load and re-apply on game start.</summary>
         public HashSet<string> ActiveBoosts { get; } = new();
 
+        /// <summary>Path letters that have been scouted (building names revealed).</summary>
+        public HashSet<string> ScoutedPaths { get; } = new();
+
         public ArchipelagoSaveData(ISingletonLoader singletonLoader, FactionService factionService)
         {
             _singletonLoader = singletonLoader;
@@ -141,6 +146,24 @@ namespace ArchipelagoIntegration
         {
             // Always subscribe to connection events — even on fresh saves with no AP data
             ArchipelagoManager.OnConnectionChanged += OnConnectionChanged;
+
+            // Set faction early so GetFaction() works before SlotData arrives
+            try
+            {
+                var currentProp = _factionService.GetType().GetProperty("Current");
+                var factionSpec = currentProp?.GetValue(_factionService);
+                var idProp = factionSpec?.GetType().GetProperty("Id");
+                var gameFactionId = idProp?.GetValue(factionSpec)?.ToString();
+                if (!string.IsNullOrEmpty(gameFactionId))
+                {
+                    ApBuildingLocations.SetGameFaction(gameFactionId);
+                    Debug.Log($"[Archipelago] Game faction set early: {gameFactionId}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[Archipelago] Could not read faction from FactionService: {ex.Message}");
+            }
 
             if (!_singletonLoader.TryGetSingleton(ArchipelagoKey, out var loader))
             {
@@ -241,6 +264,13 @@ namespace ArchipelagoIntegration
                 if (!string.IsNullOrEmpty(raw))
                     foreach (var b in raw.Split('|'))
                         ActiveBoosts.Add(b);
+            }
+            if (loader.Has(ScoutedPathsKey))
+            {
+                var raw = loader.Get(ScoutedPathsKey);
+                if (!string.IsNullOrEmpty(raw))
+                    foreach (var p in raw.Split('|'))
+                        ScoutedPaths.Add(p);
             }
 
             Debug.Log($"[Archipelago] Loaded save data: ProcessedItemIndex={ArchipelagoManager.ProcessedItemIndex}, " +
@@ -436,6 +466,8 @@ namespace ArchipelagoIntegration
             saver.Set(GoalAchievedKey, GoalAchieved ? 1 : 0);
             if (ActiveBoosts.Count > 0)
                 saver.Set(ActiveBoostsKey, string.Join("|", ActiveBoosts));
+            if (ScoutedPaths.Count > 0)
+                saver.Set(ScoutedPathsKey, string.Join("|", ScoutedPaths));
         }
 
         /// <summary>
@@ -465,14 +497,14 @@ namespace ArchipelagoIntegration
 
         // -----------------------------------------------------------------
         // Serialization helpers (pipe-delimited compact format)
-        // Format per slot: "Path,Level,LocationId,Price,Tier"
+        // Format per slot: "Path,Level,LocationId,Price,Tier,BuildingName"
         // Slots separated by ";"
         // -----------------------------------------------------------------
 
         private static string SerializeShopLayout(List<ShopSlot> layout)
         {
             return string.Join(";", layout.Select(s =>
-                $"{s.Path},{s.Level},{s.LocationId},{s.Price},{s.Tier}"));
+                $"{s.Path},{s.Level},{s.LocationId},{s.Price},{s.Tier},{s.BuildingName}"));
         }
 
         private static List<ShopSlot> DeserializeShopLayout(string raw)
@@ -489,6 +521,7 @@ namespace ArchipelagoIntegration
                     LocationId = long.Parse(parts[2]),
                     Price = int.Parse(parts[3]),
                     Tier = int.Parse(parts[4]),
+                    BuildingName = parts.Length > 5 ? parts[5] : "",
                 });
             }
             return result;
@@ -528,6 +561,7 @@ namespace ArchipelagoIntegration
                     LocationId = item["location_id"]?.ToObject<long>() ?? 0,
                     Price = item["price"]?.ToObject<int>() ?? 0,
                     Tier = item["tier"]?.ToObject<int>() ?? 1,
+                    BuildingName = item["building_name"]?.ToString() ?? "",
                 });
             }
 

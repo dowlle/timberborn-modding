@@ -21,15 +21,32 @@ namespace ArchipelagoIntegration
         private readonly EntityComponentRegistry _entityComponentRegistry;
         private readonly ArchipelagoSaveData _saveData;
 
+        // Weather scheduling state
+        private readonly Queue<string> _weatherTrapQueue = new();
+        private object _weatherService; // WeatherService resolved via reflection
+        private PropertyInfo _isHazardousWeatherProp;
+        private PropertyInfo _cycleDayProp;
+        private bool _weatherServiceSearched;
+
+        // Pending weather: scheduled with 3 in-game day notice
+        private string _pendingWeatherType;
+        private int _pendingWeatherStartDay = -1;
+        private const int WEATHER_NOTICE_DAYS = 3;
+
         // GoodId type resolved via reflection (from Timberborn.Goods)
         private Type _goodIdType;
         private bool _goodIdTypeSearched;
 
-        // BonusManager + BonusId types resolved via reflection
+        // BonusManager resolved via reflection
         private Type _bonusManagerType;
-        private Type _bonusIdType;
         private MethodInfo _addBonusMethod;
         private bool _bonusSystemSearched;
+
+        // NeedManager resolved via reflection
+        private Type _needManagerType;
+        private MethodInfo _getNeedMethod;   // NeedManager.GetNeed(string)
+        private MethodInfo _setPointsMethod; // Need.SetPoints(float)
+        private bool _needSystemSearched;
 
         // Filler: display name → game GoodId string
         private static readonly Dictionary<string, string> FillerGoodMapping = new()
@@ -43,16 +60,16 @@ namespace ArchipelagoIntegration
             { "Scrap Metal", "ScrapMetal" },
         };
 
-        // Boost: item suffix → (BonusId string to try, multiplier delta)
-        // BonusId strings are best-guesses — will be verified at runtime
+        // Boost: item suffix → (BonusId string, multiplier delta)
+        // BonusId strings match BonusTypeSpec.Id from game blueprint JSON specs
         private static readonly Dictionary<string, (string bonusId, float delta)> BoostMapping = new()
         {
             { "Faster Movement Speed",       ("MovementSpeed", 0.25f) },
             { "Increased Carrying Capacity",  ("CarryingCapacity", 0.50f) },
-            { "Faster Working Speed",         ("WorkSpeed", 0.25f) },
-            { "Faster Tree Growth",           ("TreeGrowth", 0.50f) },
-            { "Longer Life Expectancy",       ("Longevity", 0.25f) },
-            { "Better Woodcutting Chance",    ("WoodcuttingYield", 0.25f) },
+            { "Faster Working Speed",         ("WorkingSpeed", 0.25f) },
+            { "Faster Tree Growth",           ("GrowthSpeed", 0.50f) },
+            { "Longer Life Expectancy",       ("LifeExpectancy", 0.25f) },
+            { "Better Woodcutting Chance",    ("CuttingSuccessChance", 0.25f) },
         };
 
         public ApEffectHandler(
@@ -68,6 +85,7 @@ namespace ArchipelagoIntegration
         public void Load()
         {
             Instance = this;
+            DiscoverBonusIds();
 
             // Re-apply persisted boosts to all existing entities
             if (_saveData.ActiveBoosts.Count > 0)
@@ -118,6 +136,9 @@ namespace ArchipelagoIntegration
                 case "Hungry Beavers":
                     TriggerHungryBeavers();
                     break;
+                case "Thirsty Beavers":
+                    TriggerThirstyBeavers();
+                    break;
                 default:
                     Debug.LogWarning($"[Archipelago] Unknown trap: {trapName}");
                     break;
@@ -126,11 +147,45 @@ namespace ArchipelagoIntegration
 
         private void TriggerHazardousWeather(string type)
         {
+            // Check if hazardous weather is already active or pending (scheduled but not yet started)
+            if (IsHazardousWeatherActive() || _pendingWeatherType != null)
+            {
+                // Read trap_mode from slot data: 0=queue, 1=skip
+                int trapMode = 0;
+                if (ArchipelagoManager.SlotData != null
+                    && ArchipelagoManager.SlotData.TryGetValue("trap_mode", out var modeObj))
+                {
+                    int.TryParse(modeObj?.ToString() ?? "0", out trapMode);
+                }
+
+                if (trapMode == 1)
+                {
+                    Debug.Log($"[Archipelago] Weather trap '{type}' skipped (weather active, trap_mode=skip)");
+                    ArchipelagoManager.PostLogMessage($"Trap skipped: {type} (weather already active)");
+                    return;
+                }
+
+                _weatherTrapQueue.Enqueue(type);
+                Debug.Log($"[Archipelago] Weather trap '{type}' queued (weather active, queue size: {_weatherTrapQueue.Count})");
+                ArchipelagoManager.PostLogMessage($"Trap queued: {type} (weather already active)");
+                return;
+            }
+
+            ScheduleHazardousWeather(type);
+        }
+
+        /// <summary>
+        /// Schedules hazardous weather with a 3 in-game day notice period.
+        /// Sets CurrentCycleHazardousWeather immediately (so the game knows what's
+        /// coming), then waits for WEATHER_NOTICE_DAYS before calling
+        /// StartHazardousWeather(). The AP event log announces the incoming weather.
+        /// </summary>
+        private void ScheduleHazardousWeather(string type)
+        {
             try
             {
-                // Force the weather type before triggering:
-                // HazardousWeatherService has _droughtWeather and _badtideWeather fields
-                // and a CurrentCycleHazardousWeather property we can set
+                // Set the weather type on HazardousWeatherService so the game
+                // knows which hazard is coming
                 var serviceType = _hazardousWeatherService.GetType();
                 var flags = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
 
@@ -143,11 +198,45 @@ namespace ArchipelagoIntegration
                     if (setCurrent != null && weatherInstance != null)
                     {
                         setCurrent.SetValue(_hazardousWeatherService, weatherInstance);
-                        Debug.Log($"[Archipelago] Set CurrentCycleHazardousWeather to {type}");
                     }
                 }
 
-                // Now trigger it
+                // Get current in-game day to schedule the start
+                int currentDay = GetCurrentCycleDay();
+                if (currentDay >= 0)
+                {
+                    _pendingWeatherType = type;
+                    _pendingWeatherStartDay = currentDay + WEATHER_NOTICE_DAYS;
+                    string weatherName = type == "badtide" ? "Badtide" : "Drought";
+                    Debug.Log($"[Archipelago] Scheduled {type} to start on day {_pendingWeatherStartDay} (current: {currentDay}, notice: {WEATHER_NOTICE_DAYS} days)");
+                    ArchipelagoManager.PostLogMessage($"WARNING: {weatherName} approaching in {WEATHER_NOTICE_DAYS} days! Prepare your colony!");
+                }
+                else
+                {
+                    // Fallback: can't read cycle day, trigger immediately
+                    Debug.LogWarning("[Archipelago] Could not read CycleDay — triggering weather immediately");
+                    ForceStartHazardousWeather(type);
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[Archipelago] Failed to schedule {type}: {ex.Message}");
+                // Fallback to immediate
+                ForceStartHazardousWeather(type);
+            }
+        }
+
+        /// <summary>
+        /// Force-starts hazardous weather immediately (fallback when scheduling fails,
+        /// or called by ProcessWeatherQueue when notice period expires).
+        /// </summary>
+        private void ForceStartHazardousWeather(string type)
+        {
+            try
+            {
+                var serviceType = _hazardousWeatherService.GetType();
+                var flags = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
+
                 var startMethod = serviceType.GetMethod("StartHazardousWeather", flags);
                 if (startMethod == null)
                 {
@@ -156,8 +245,9 @@ namespace ArchipelagoIntegration
                 }
 
                 startMethod.Invoke(_hazardousWeatherService, null);
+                string weatherName = type == "badtide" ? "Badtide" : "Drought";
                 Debug.Log($"[Archipelago] Triggered hazardous weather ({type})");
-                ArchipelagoManager.PostLogMessage($"Trap activated: {type} incoming!");
+                ArchipelagoManager.PostLogMessage($"The {weatherName} has begun!");
             }
             catch (Exception ex)
             {
@@ -166,14 +256,101 @@ namespace ArchipelagoIntegration
             }
         }
 
-        private void TriggerHungryBeavers()
+        private int GetCurrentCycleDay()
         {
-            // Apply a food consumption multiplier to all current beavers
-            // Uses the BonusSystem to double food consumption
+            EnsureWeatherServiceResolved();
+            if (_weatherService == null || _cycleDayProp == null) return -1;
             try
             {
-                int affected = ApplyBonusToAllEntities("FoodConsumption", 1.0f);
-                Debug.Log($"[Archipelago] Hungry Beavers: doubled food consumption on {affected} entities");
+                return (int)_cycleDayProp.GetValue(_weatherService);
+            }
+            catch
+            {
+                return -1;
+            }
+        }
+
+        /// <summary>
+        /// Called each tick by ArchipelagoTicker. Handles two things:
+        /// 1. Pending scheduled weather: fires when the notice period expires
+        /// 2. Queued weather traps: fires next queued trap when weather ends
+        /// </summary>
+        public void ProcessWeatherQueue()
+        {
+            // Check if a scheduled weather's notice period has expired
+            if (_pendingWeatherType != null)
+            {
+                int currentDay = GetCurrentCycleDay();
+                if (currentDay >= _pendingWeatherStartDay)
+                {
+                    var type = _pendingWeatherType;
+                    _pendingWeatherType = null;
+                    _pendingWeatherStartDay = -1;
+                    Debug.Log($"[Archipelago] Weather notice period expired on day {currentDay} — starting {type}");
+                    ForceStartHazardousWeather(type);
+                }
+                return; // Don't dequeue while a scheduled weather is pending
+            }
+
+            // Process queued weather traps when no weather is active
+            if (_weatherTrapQueue.Count == 0) return;
+            if (IsHazardousWeatherActive()) return;
+
+            var next = _weatherTrapQueue.Dequeue();
+            Debug.Log($"[Archipelago] Dequeuing weather trap: {next} (remaining: {_weatherTrapQueue.Count})");
+            ScheduleHazardousWeather(next);
+        }
+
+        private bool IsHazardousWeatherActive()
+        {
+            EnsureWeatherServiceResolved();
+            if (_weatherService == null || _isHazardousWeatherProp == null)
+                return false;
+
+            try
+            {
+                return (bool)_isHazardousWeatherProp.GetValue(_weatherService);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private void EnsureWeatherServiceResolved()
+        {
+            if (_weatherServiceSearched) return;
+            _weatherServiceSearched = true;
+
+            // WeatherService is not directly injected — find it via the HazardousWeatherService's
+            // containing service or via EntityComponentRegistry
+            var weatherServiceType = FindType("Timberborn.WeatherSystem.WeatherService");
+            if (weatherServiceType == null)
+            {
+                Debug.LogWarning("[Archipelago] Could not find WeatherService type");
+                return;
+            }
+
+            _isHazardousWeatherProp = weatherServiceType.GetProperty("IsHazardousWeather",
+                BindingFlags.Public | BindingFlags.Instance);
+            _cycleDayProp = weatherServiceType.GetProperty("CycleDay",
+                BindingFlags.Public | BindingFlags.Instance);
+
+            // Try to find the WeatherService instance — it should be a singleton in the game scene
+            // Look for it on any GameObject
+            _weatherService = UnityEngine.Object.FindFirstObjectByType(weatherServiceType);
+
+            Debug.Log($"[Archipelago] WeatherService resolved: instance={_weatherService != null}, " +
+                      $"IsHazardousWeather={_isHazardousWeatherProp != null}, CycleDay={_cycleDayProp != null}");
+        }
+
+        private void TriggerHungryBeavers()
+        {
+            try
+            {
+                // Set Hunger need to -0.5 (critical state, range is -3.0 to 1.0)
+                int affected = SetNeedOnAllBeavers("Hunger", -0.5f);
+                Debug.Log($"[Archipelago] Hungry Beavers: set hunger to critical on {affected} entities");
                 ArchipelagoManager.PostLogMessage($"Trap activated: Hungry Beavers! ({affected} beavers affected)");
             }
             catch (Exception ex)
@@ -181,6 +358,101 @@ namespace ArchipelagoIntegration
                 Debug.LogWarning($"[Archipelago] Hungry Beavers trap failed: {ex.Message}");
                 ArchipelagoManager.PostLogMessage("Trap: Hungry Beavers (failed to apply)");
             }
+        }
+
+        private void TriggerThirstyBeavers()
+        {
+            try
+            {
+                // Set Thirst need to -0.5 (critical state, range is -3.0 to 1.0)
+                int affected = SetNeedOnAllBeavers("Thirst", -0.5f);
+                Debug.Log($"[Archipelago] Thirsty Beavers: set thirst to critical on {affected} entities");
+                ArchipelagoManager.PostLogMessage($"Trap activated: Thirsty Beavers! ({affected} beavers affected)");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[Archipelago] Thirsty Beavers trap failed: {ex.Message}");
+                ArchipelagoManager.PostLogMessage("Trap: Thirsty Beavers (failed to apply)");
+            }
+        }
+
+        /// <summary>
+        /// Sets a need to a specific point value on all beavers via NeedManager.
+        /// </summary>
+        private int SetNeedOnAllBeavers(string needId, float points)
+        {
+            EnsureNeedSystemResolved();
+
+            if (_needManagerType == null || _getNeedMethod == null || _setPointsMethod == null)
+            {
+                Debug.LogWarning("[Archipelago] NeedSystem not resolved — cannot set need");
+                return 0;
+            }
+
+            object managers = null;
+            var genericMethod = _entityComponentRegistry.GetType().GetMethod("GetEnabled");
+            if (genericMethod != null && genericMethod.IsGenericMethod)
+            {
+                managers = genericMethod.MakeGenericMethod(_needManagerType)
+                    .Invoke(_entityComponentRegistry, null);
+            }
+            else
+            {
+                var nonGeneric = _entityComponentRegistry.GetType()
+                    .GetMethod("GetEnabled", new[] { typeof(Type) });
+                if (nonGeneric != null)
+                    managers = nonGeneric.Invoke(_entityComponentRegistry, new object[] { _needManagerType });
+            }
+
+            if (managers == null)
+            {
+                Debug.LogWarning("[Archipelago] Could not enumerate NeedManager entities");
+                return 0;
+            }
+
+            int count = 0;
+            foreach (var manager in (System.Collections.IEnumerable)managers)
+            {
+                try
+                {
+                    var need = _getNeedMethod.Invoke(manager, new object[] { needId });
+                    if (need != null)
+                    {
+                        _setPointsMethod.Invoke(need, new object[] { points });
+                        count++;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[Archipelago] SetNeed('{needId}') failed: {ex.InnerException?.Message ?? ex.Message}");
+                }
+            }
+
+            return count;
+        }
+
+        private void EnsureNeedSystemResolved()
+        {
+            if (_needSystemSearched) return;
+            _needSystemSearched = true;
+
+            _needManagerType = FindType("Timberborn.NeedSystem.NeedManager");
+            var needType = FindType("Timberborn.NeedSystem.Need");
+
+            if (_needManagerType != null)
+            {
+                _getNeedMethod = _needManagerType.GetMethod("GetNeed",
+                    new[] { typeof(string) });
+            }
+
+            if (needType != null)
+            {
+                _setPointsMethod = needType.GetMethod("SetPoints",
+                    new[] { typeof(float) });
+            }
+
+            Debug.Log($"[Archipelago] NeedSystem resolved: Manager={_needManagerType != null}, " +
+                      $"GetNeed={_getNeedMethod != null}, SetPoints={_setPointsMethod != null}");
         }
 
         // =================================================================
@@ -352,43 +624,27 @@ namespace ArchipelagoIntegration
         {
             EnsureBonusSystemResolved();
 
-            if (_bonusManagerType == null || _addBonusMethod == null || _bonusIdType == null)
+            if (_bonusManagerType == null || _addBonusMethod == null)
             {
                 Debug.LogWarning("[Archipelago] BonusSystem not resolved — cannot apply bonus");
                 return 0;
             }
 
-            // Construct BonusId
-            object bonusId;
-            try
-            {
-                bonusId = Activator.CreateInstance(_bonusIdType, bonusIdStr);
-            }
-            catch
-            {
-                Debug.LogWarning($"[Archipelago] Could not construct BonusId('{bonusIdStr}')");
-                return 0;
-            }
-
             // Find all entities with BonusManager
-            // EntityComponentRegistry.GetEnabled may be generic or take a Type param
-            MethodInfo getEnabledMethod = null;
             object managers = null;
 
-            // Try generic version first
             var genericMethod = _entityComponentRegistry.GetType().GetMethod("GetEnabled");
             if (genericMethod != null && genericMethod.IsGenericMethod)
             {
-                getEnabledMethod = genericMethod.MakeGenericMethod(_bonusManagerType);
-                managers = getEnabledMethod.Invoke(_entityComponentRegistry, null);
+                managers = genericMethod.MakeGenericMethod(_bonusManagerType)
+                    .Invoke(_entityComponentRegistry, null);
             }
             else
             {
-                // Try non-generic version with Type parameter
-                getEnabledMethod = _entityComponentRegistry.GetType()
+                var nonGeneric = _entityComponentRegistry.GetType()
                     .GetMethod("GetEnabled", new[] { typeof(Type) });
-                if (getEnabledMethod != null)
-                    managers = getEnabledMethod.Invoke(_entityComponentRegistry, new object[] { _bonusManagerType });
+                if (nonGeneric != null)
+                    managers = nonGeneric.Invoke(_entityComponentRegistry, new object[] { _bonusManagerType });
             }
 
             if (managers == null)
@@ -398,20 +654,43 @@ namespace ArchipelagoIntegration
             }
             int count = 0;
 
+            // AddBonus takes (string bonusId, float multiplierDelta)
             foreach (var manager in (System.Collections.IEnumerable)managers)
             {
                 try
                 {
-                    _addBonusMethod.Invoke(manager, new[] { bonusId, (object)multiplierDelta });
+                    _addBonusMethod.Invoke(manager, new object[] { bonusIdStr, multiplierDelta });
                     count++;
                 }
-                catch
+                catch (Exception ex)
                 {
-                    // This entity may not support this bonus type — skip
+                    Debug.LogWarning($"[Archipelago] AddBonus('{bonusIdStr}', {multiplierDelta}) failed on entity: {ex.InnerException?.Message ?? ex.Message}");
                 }
             }
 
             return count;
+        }
+
+        private void DiscoverBonusIds()
+        {
+            try
+            {
+                var serviceType = FindType("Timberborn.BonusSystem.BonusTypeSpecService");
+                if (serviceType == null) return;
+
+                var bonusIdsProp = serviceType.GetProperty("BonusIds",
+                    BindingFlags.Public | BindingFlags.Instance);
+                if (bonusIdsProp == null) return;
+
+                // BonusTypeSpecService is a singleton — find it via EntityComponentRegistry or direct search
+                // We can't easily get the instance here, but log the spec type info for debugging
+                Debug.Log("[Archipelago] BonusTypeSpec IDs available via BonusTypeSpecService.BonusIds at runtime");
+                Debug.Log($"[Archipelago] Configured boost BonusIds: {string.Join(", ", BoostMapping.Values)}");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[Archipelago] BonusId discovery failed: {ex.Message}");
+            }
         }
 
         private void EnsureBonusSystemResolved()
@@ -420,16 +699,20 @@ namespace ArchipelagoIntegration
             _bonusSystemSearched = true;
 
             _bonusManagerType = FindType("Timberborn.BonusSystem.BonusManager");
-            _bonusIdType = FindType("Timberborn.BonusSystem.BonusId");
 
             if (_bonusManagerType != null)
             {
+                // AddBonus(string bonusId, float multiplierDelta)
                 _addBonusMethod = _bonusManagerType.GetMethod("AddBonus",
+                    new[] { typeof(string), typeof(float) });
+
+                // Fallback: search by name if exact signature not found
+                _addBonusMethod ??= _bonusManagerType.GetMethod("AddBonus",
                     BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
             }
 
             Debug.Log($"[Archipelago] BonusSystem resolved: Manager={_bonusManagerType != null}, " +
-                      $"Id={_bonusIdType != null}, AddBonus={_addBonusMethod != null}");
+                      $"AddBonus={_addBonusMethod != null}");
         }
 
         // =================================================================

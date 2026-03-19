@@ -17,6 +17,9 @@ namespace ArchipelagoIntegration
                 ApMilestoneTracker.Instance?.CheckMilestones();
                 ApGoalTracker.Instance?.CheckGoals();
             }
+
+            // Process queued weather traps even when disconnected (trap already received)
+            ApEffectHandler.Instance?.ProcessWeatherQueue();
         }
     }
 }

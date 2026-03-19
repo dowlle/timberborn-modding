@@ -292,89 +292,87 @@ namespace ArchipelagoIntegration
         private static readonly HashSet<string> Tier1Buildings = new()
         {
             // Shared T1
-            "Forester", "Medium Tank", "Levee", "Vertical Power Shaft",
-            "Medical Bed", "Stairs", "Platform", "Builders' Hut", "Lever",
-            "Roof 1x1", "Bench", "Roof 1x2", "Lantern", "Flow Sensor", "Relay",
+            "Forester", "Gear Workshop", "Large Warehouse", "Fluid Dump",
+            "Levee", "Floodgate", "Double Floodgate", "Triple Floodgate",
+            "Geothermal Engine", "Builders' Hut", "District Crossing",
+            "Medical Bed", "Stairs", "Platform", "Double Platform",
+            "Triple Platform", "Suspension Bridge 1x1", "Suspension Bridge 2x1",
+            "Suspension Bridge 3x1", "Suspension Bridge 4x1",
+            "Suspension Bridge 5x1", "Suspension Bridge 6x1",
+            "Roof 1x1", "Bench", "Roof 1x2", "Lantern", "Roof 2x2",
+            "Roof 2x3", "Roof 3x2", "Stream Gauge", "Wood Fence",
             // FT-only T1
-            "Mini Lodge", "Shower", "Contemplation Spot",
+            "Aquatic Farmhouse", "Mini Lodge", "Double Lodge", "Triple Lodge",
+            "Scavenger Flag", "Wind Turbine", "Shower", "Contemplation Spot",
+            "Lido", "Agora", "Hammock", "Hedge", "Weathervane",
+            "Beaver Statue", "Farmer Monument", "Brazier of Bonding",
             // IT-only T1
-            "Double Shower", "Scratcher", "Oil Press", "Brazier", "Rowhouse",
-            "Beaver Bust", "Large Water Wheel",
+            "Rowhouse", "Large Barrack", "Large Rowhouse",
+            "Large Water Wheel", "Double Shower", "Scratcher",
+            "Swimming Pool", "Laborer Monument",
         };
 
         private static readonly HashSet<string> Tier2Buildings = new()
         {
             // Shared T2
-            "Gear Workshop", "Fill Valve", "Roof 2x2",
-            "Geothermal Engine", "Floodgate", "Impermeable Floor",
-            "Large Warehouse", "Fluid Dump", "Double Floodgate",
-            "Suspension Bridge 1x1", "Double Platform", "Gate", "Triple Platform",
-            "Suspension Bridge 2x1", "Roof 2x3", "Roof 3x2",
-            "Stream Gauge", "Wood Fence", "Chronometer", "Depth Sensor",
-            "Population Counter", "Resource Counter", "Science Counter",
-            "Weather Station",
+            "Medium Tank", "Vertical Power Shaft", "Chronometer",
+            "Lever", "Relay", "Flow Sensor",
+            "Population Counter", "Resource Counter",
             // FT-only T2
-            "Aquatic Farmhouse", "Bakery", "Gristmill", "Hammock",
-            "Wind Turbine", "Double Lodge", "Badwater Pump",
-            "Paper Mill", "Lido", "Herbalist", "Triple Lodge",
-            "Hedge", "Scarecrow", "Weathervane",
-            // IT-only T2
-            "Hydroponic Garden", "Charging Station", "Swimming Pool",
-            "Deep Badwater Pump", "Food Factory", "Large Barrack",
-            "Steam Engine", "Exercise Plaza", "Coffee Brewery", "Bell", "Tubeway",
+            "Paper Mill", "Tapper's Shack", "Wood Workshop",
+            "Bakery", "Gristmill", "Beehive", "Underground Pile",
+            "Large Wind Turbine", "Observatory", "Herbalist", "Scarecrow",
         };
 
         private static readonly HashSet<string> Tier3Buildings = new()
         {
             // Shared T3
-            "Smelter", "Bot Part Factory", "Aquifer Drill",
-            "Explosives Factory", "Valve", "Triple Floodgate",
-            "Clutch", "Gravity Battery", "Tapper's Shack",
-            "Suspension Bridge 3x1", "Overhang 2x1", "Spiral Stairs",
-            "Contamination Sensor", "Indicator", "Speaker",
-            "Detonator", "Overhang 3x1", "Suspension Bridge 4x1",
-            "Power Meter", "Timer", "Firework Launcher", "Large Tank",
-            "District Crossing", "Centrifuge", "Wood Workshop",
-            "Square Banner",
+            "Smelter", "Bot Part Factory", "Bot Assembler",
+            "Large Tank", "Badwater Pump", "Fill Valve", "Aquifer Drill",
+            "Centrifuge", "Impermeable Floor", "Explosives Factory",
+            "Clutch", "Gravity Battery", "Refinery",
+            "Carousel", "Gate",
+            "Overhang 2x1", "Overhang 3x1",
+            "Zipline Pylon", "Zipline Beam", "Zipline Station",
+            "Metal Platform 3x3", "Metal Platform 5x5",
+            "Depth Sensor", "Science Counter", "Contamination Sensor",
+            "Indicator", "Speaker", "Power Meter",
+            "HTTP Lever", "HTTP Adapter", "Bulletin Pole",
             // FT-only T3
-            "Scavenger Flag", "Printing Press", "Refinery",
-            "Large Water Pump", "Contamination Barrier",
-            "Agora", "Beehive", "Zipline Pylon",
-            "Zipline Beam", "Zipline Station", "Carousel",
-            "Bulletin Pole", "Beaver Statue", "Pole Banner",
+            "Printing Press", "Badwater Dome", "Contamination Barrier",
             // IT-only T3
-            "Metalsmith", "Metal Fence", "Decontamination Pod",
-            "Irrigation Barrier", "Decorative Clock", "Large Rowhouse",
-            "Vertical Tubeway", "Wind Tunnel", "Tubeway Station",
+            "Food Factory", "Metalsmith", "Control Tower",
+            "Decontamination Pod", "Wind Tunnel",
+            "Tubeway", "Vertical Tubeway", "Tubeway Station",
+            "Brazier", "Bell", "Decorative Clock",
         };
 
         private static readonly HashSet<string> Tier4Buildings = new()
         {
             // Shared T4
-            "Bot Assembler", "Dynamite", "Double Dynamite",
-            "Terrain Block", "Triple Dynamite", "Dirt Excavator", "Tunnel",
-            "Detailer", "Metal Platform 3x3", "Overhang 4x1",
-            "Suspension Bridge 5x1", "Memory", "Metal Platform 5x5",
-            "Overhang 5x1", "Suspension Bridge 6x1", "Overhang 6x1",
+            "Large Water Pump", "Mechanical Fluid Pump", "Valve",
+            "Dynamite", "Double Dynamite", "Terrain Block",
+            "Triple Dynamite", "Dirt Excavator", "Tunnel", "Mine",
+            "Detailer", "Spiral Stairs", "Weather Station",
+            "Timer", "Firework Launcher", "Memory", "Detonator",
+            "Overhang 4x1", "Overhang 5x1", "Overhang 6x1",
             // FT-only T4
-            "Observatory", "Large Wind Turbine", "Dance Hall", "Mud Pit",
-            "Underground Pile", "Mechanical Fluid Pump", "Badwater Dome",
-            "Farmer Monument", "Brazier of Bonding", "Earth Recultivator",
+            "Badwater Rig", "Dance Hall", "Mud Pit",
+            "Pole Banner", "Square Banner", "Fountain of Joy",
             // IT-only T4
-            "Advanced Breeding Pod", "Control Tower", "Laborer Monument",
-            "Motivatorium", "Numbercruncher", "Mud Bath", "Grease Factory",
-            "Deep Mechanical Fluid Pump", "Flame of Unity",
+            "Coffee Brewery", "Advanced Breeding Pod",
+            "Deep Mechanical Fluid Pump", "Badwater Discharge",
+            "Irrigation Barrier", "Efficient Mine", "Grease Factory",
+            "Motivatorium", "Mud Bath", "Tribute to Ingenuity",
         };
 
         private static readonly HashSet<string> Tier5Buildings = new()
         {
-            // Shared T5
-            "HTTP Lever", "HTTP Adapter",
-            // FT-only T5
-            "Mine", "Badwater Rig", "Fountain of Joy",
             // IT-only T5
-            "Badwater Discharge", "Efficient Mine",
-            "Tribute to Ingenuity", "Earth Repopulator",
+            "Oil Press", "Hydroponic Garden", "Deep Badwater Pump",
+            "Steam Engine", "Charging Station", "Numbercruncher",
+            "Exercise Plaza", "Metal Fence", "Beaver Bust",
+            "Flame of Unity",
         };
 
         // -----------------------------------------------------------------
@@ -433,11 +431,26 @@ namespace ArchipelagoIntegration
         // Faction helper
         // -----------------------------------------------------------------
 
+        private static string _gameFaction;
+
         /// <summary>
-        /// Reads the faction string from slot data. Returns "Folktails" or "IronTeeth".
+        /// Sets the game faction early (from FactionService at Load time)
+        /// so that GetFaction() works before SlotData is available.
+        /// </summary>
+        public static void SetGameFaction(string faction)
+        {
+            _gameFaction = faction;
+        }
+
+        /// <summary>
+        /// Returns "Folktails" or "IronTeeth".
+        /// Checks: 1) _gameFaction (set at Load), 2) SlotData, 3) default.
         /// </summary>
         public static string GetFaction()
         {
+            if (!string.IsNullOrEmpty(_gameFaction))
+                return _gameFaction;
+
             if (ArchipelagoManager.SlotData != null
                 && ArchipelagoManager.SlotData.TryGetValue("faction", out var factionObj))
             {

@@ -200,6 +200,11 @@ namespace ArchipelagoIntegration
             card.ProgressLabel.AddToClassList("ap-shop__card-progress");
             card.Container.Add(card.ProgressLabel);
 
+            // Building name (scouted or hidden)
+            card.BuildingNameLabel = new Label("???");
+            card.BuildingNameLabel.AddToClassList("ap-shop__card-building");
+            card.Container.Add(card.BuildingNameLabel);
+
             // Price: "150 SC"
             card.PriceLabel = new Label("");
             card.PriceLabel.AddToClassList("ap-shop__card-price");
@@ -339,6 +344,7 @@ namespace ArchipelagoIntegration
                 if (next == null)
                 {
                     // Path complete
+                    card.BuildingNameLabel.style.display = DisplayStyle.None;
                     card.PriceLabel.style.display = DisplayStyle.None;
                     card.TierLabel.style.display = DisplayStyle.None;
                     card.BuyButton.style.display = DisplayStyle.None;
@@ -352,6 +358,9 @@ namespace ArchipelagoIntegration
                 else if (!IsBranchSlotAvailable(next))
                 {
                     // Tier locked
+                    bool scouted = _saveData.ScoutedPaths.Contains(path);
+                    card.BuildingNameLabel.text = scouted ? next.Slot.BuildingName : "???";
+                    card.BuildingNameLabel.style.display = DisplayStyle.Flex;
                     card.PriceLabel.text = $"{next.Slot.Price} SC";
                     card.PriceLabel.style.display = DisplayStyle.Flex;
                     card.TierLabel.text = $"T{next.Slot.Tier}";
@@ -368,6 +377,9 @@ namespace ArchipelagoIntegration
                 else
                 {
                     // Available
+                    bool scouted = _saveData.ScoutedPaths.Contains(path);
+                    card.BuildingNameLabel.text = scouted ? next.Slot.BuildingName : "???";
+                    card.BuildingNameLabel.style.display = DisplayStyle.Flex;
                     bool canAfford = _scienceService.SciencePoints >= next.Slot.Price;
                     card.PriceLabel.text = $"{next.Slot.Price} SC";
                     card.PriceLabel.style.display = DisplayStyle.Flex;
@@ -466,6 +478,7 @@ namespace ArchipelagoIntegration
             public int TotalSlots;
             public VisualElement Container;
             public Label ProgressLabel;
+            public Label BuildingNameLabel;
             public Label PriceLabel;
             public Label TierLabel;
             public Label StatusLabel;

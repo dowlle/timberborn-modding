@@ -76,6 +76,16 @@ namespace ArchipelagoIntegration
             // Track all received items for tier gate evaluation and save persistence
             _saveData.ReceivedItems.Add(item.ItemName);
 
+            // Handle Scout items (reveal building names on a path)
+            if (item.ItemName.StartsWith("Scout: Path "))
+            {
+                var pathLetter = item.ItemName.Substring("Scout: Path ".Length);
+                _saveData.ScoutedPaths.Add(pathLetter);
+                Debug.Log($"[Archipelago] Path {pathLetter} scouted (from {item.SenderName})");
+                ArchipelagoManager.PostLogMessage($"Path {pathLetter} scouted! Building names revealed.");
+                return;
+            }
+
             // Handle Skip items (branching shop)
             if (item.ItemName == "Skip")
             {
