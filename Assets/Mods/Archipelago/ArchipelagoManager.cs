@@ -79,6 +79,10 @@ namespace ArchipelagoIntegration
         private static readonly ConcurrentQueue<ApItem> _pendingItems = new();
         private static readonly ConcurrentQueue<string> _pendingMessages = new();
 
+        // Retry queue for failed location checks — drained each frame alongside items
+        private static readonly Queue<long> _pendingLocationChecks = new();
+        private static bool _goalPending;
+
         // ------------------------------------------------------------------ connect / disconnect
 
         /// <summary>
@@ -166,22 +170,26 @@ namespace ArchipelagoIntegration
 
         // ------------------------------------------------------------------ sending
 
-        /// <summary>Send a location check by its AP location ID.</summary>
+        /// <summary>Send a location check by its AP location ID. Queues for retry on failure.</summary>
         public static void SendLocationCheck(long locationId)
         {
-            if (!IsConnected) return;
+            if (!IsConnected)
+            {
+                _pendingLocationChecks.Enqueue(locationId);
+                return;
+            }
             try
             {
                 _session.Locations.CompleteLocationChecks(locationId);
             }
             catch (Exception ex)
             {
-                Debug.LogError($"[Archipelago] Failed to send location check {locationId}: {ex.Message}");
-                PostLogMessage($"Connection error — check may not have been sent.");
+                Debug.LogError($"[Archipelago] Failed to send location check {locationId}, queued for retry: {ex.Message}");
+                _pendingLocationChecks.Enqueue(locationId);
             }
         }
 
-        /// <summary>Send a location check looked up by name.</summary>
+        /// <summary>Send a location check looked up by name. Resolves to ID and queues for retry on failure.</summary>
         public static void SendLocationCheck(string locationName)
         {
             if (!IsConnected) return;
@@ -189,29 +197,34 @@ namespace ArchipelagoIntegration
             {
                 var id = _session.Locations.GetLocationIdFromName("Timberborn", locationName);
                 if (id >= 0)
-                    _session.Locations.CompleteLocationChecks(id);
+                    SendLocationCheck(id);
                 else
                     Debug.LogWarning($"[Archipelago] Unknown location: {locationName}");
             }
             catch (Exception ex)
             {
-                Debug.LogError($"[Archipelago] Failed to send location check '{locationName}': {ex.Message}");
-                PostLogMessage($"Connection error — check may not have been sent.");
+                Debug.LogError($"[Archipelago] Failed to resolve location '{locationName}': {ex.Message}");
             }
         }
 
-        /// <summary>Notify the server that the goal has been completed.</summary>
+        /// <summary>Notify the server that the goal has been completed. Retries on next tick if it fails.</summary>
         public static void SendGoalCompleted()
         {
-            if (!IsConnected) return;
+            if (!IsConnected)
+            {
+                _goalPending = true;
+                return;
+            }
             try
             {
                 _session.SetGoalAchieved();
+                _goalPending = false;
                 Debug.Log("[Archipelago] Goal achieved — sent to server.");
             }
             catch (Exception ex)
             {
-                Debug.LogError($"[Archipelago] Failed to send goal completion: {ex.Message}");
+                Debug.LogError($"[Archipelago] Failed to send goal completion, will retry: {ex.Message}");
+                _goalPending = true;
             }
         }
 
@@ -242,6 +255,33 @@ namespace ArchipelagoIntegration
             while (_pendingItems.TryDequeue(out var item))
             {
                 OnItemReceived?.Invoke(item);
+            }
+
+            // Retry any pending location checks that failed earlier
+            if (IsConnected && _pendingLocationChecks.Count > 0)
+            {
+                int retryCount = _pendingLocationChecks.Count;
+                for (int i = 0; i < retryCount; i++)
+                {
+                    var locId = _pendingLocationChecks.Dequeue();
+                    try
+                    {
+                        _session.Locations.CompleteLocationChecks(locId);
+                        Debug.Log($"[Archipelago] Retry succeeded for location {locId}");
+                    }
+                    catch
+                    {
+                        // Still failing — re-queue and stop retrying this frame
+                        _pendingLocationChecks.Enqueue(locId);
+                        break;
+                    }
+                }
+            }
+
+            // Retry pending goal completion
+            if (IsConnected && _goalPending)
+            {
+                SendGoalCompleted();
             }
         }
 
