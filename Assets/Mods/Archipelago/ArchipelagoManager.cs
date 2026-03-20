@@ -170,26 +170,49 @@ namespace ArchipelagoIntegration
         public static void SendLocationCheck(long locationId)
         {
             if (!IsConnected) return;
-            _session.Locations.CompleteLocationChecks(locationId);
+            try
+            {
+                _session.Locations.CompleteLocationChecks(locationId);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[Archipelago] Failed to send location check {locationId}: {ex.Message}");
+                PostLogMessage($"Connection error — check may not have been sent.");
+            }
         }
 
         /// <summary>Send a location check looked up by name.</summary>
         public static void SendLocationCheck(string locationName)
         {
             if (!IsConnected) return;
-            var id = _session.Locations.GetLocationIdFromName("Timberborn", locationName);
-            if (id >= 0)
-                _session.Locations.CompleteLocationChecks(id);
-            else
-                Debug.LogWarning($"[Archipelago] Unknown location: {locationName}");
+            try
+            {
+                var id = _session.Locations.GetLocationIdFromName("Timberborn", locationName);
+                if (id >= 0)
+                    _session.Locations.CompleteLocationChecks(id);
+                else
+                    Debug.LogWarning($"[Archipelago] Unknown location: {locationName}");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[Archipelago] Failed to send location check '{locationName}': {ex.Message}");
+                PostLogMessage($"Connection error — check may not have been sent.");
+            }
         }
 
         /// <summary>Notify the server that the goal has been completed.</summary>
         public static void SendGoalCompleted()
         {
             if (!IsConnected) return;
-            _session.SetGoalAchieved();
-            Debug.Log("[Archipelago] Goal achieved — sent to server.");
+            try
+            {
+                _session.SetGoalAchieved();
+                Debug.Log("[Archipelago] Goal achieved — sent to server.");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[Archipelago] Failed to send goal completion: {ex.Message}");
+            }
         }
 
         // ------------------------------------------------------------------ log messages
