@@ -1,6 +1,6 @@
 {
   "Name": "Archipelago Multiworld",
-  "Version": "0.0.1.0",
+  "Version": "0.0.2.0",
   "Id": "ArchipelagoMW.Timberborn",
   "MinimumGameVersion": "1.0.0.0",
   "Description": "Connects Timberborn to the Archipelago Multiworld Randomizer. Building blueprints normally unlocked through Science are shuffled across a multiworld — survive on whatever tech arrives while sending checks to unlock buildings for other players.\n\nFolktails faction. Requires an Archipelago server running the Timberborn APWorld.",

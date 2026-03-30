@@ -55,6 +55,8 @@ namespace ArchipelagoIntegration
         private static readonly PropertyKey<int> GoalAchievedKey = new("GoalAchieved");
         private static readonly PropertyKey<string> ActiveBoostsKey = new("ActiveBoosts");
         private static readonly PropertyKey<string> ScoutedPathsKey = new("ScoutedPaths");
+        private static readonly PropertyKey<int> BaselineDroughtKey = new("BaselineDroughtCount");
+        private static readonly PropertyKey<int> BaselineBadtideKey = new("BaselineBadtideCount");
 
         /// <summary>Fired when ShopLayout becomes available (from save or slot_data).</summary>
         public static event Action OnShopLayoutAvailable;
@@ -102,6 +104,10 @@ namespace ArchipelagoIntegration
 
         /// <summary>AP location IDs of milestones already checked.</summary>
         public HashSet<long> CheckedMilestoneIds { get; } = new();
+
+        /// <summary>Baseline hazardous weather counts at AP session start (-1 = not yet set).</summary>
+        public int BaselineDroughtCount { get; set; } = -1;
+        public int BaselineBadtideCount { get; set; } = -1;
 
         /// <summary>
         /// Progressive item chains from slot_data.
@@ -223,6 +229,10 @@ namespace ArchipelagoIntegration
                         if (long.TryParse(id, out var lid))
                             CheckedMilestoneIds.Add(lid);
             }
+            if (loader.Has(BaselineDroughtKey))
+                BaselineDroughtCount = loader.Get(BaselineDroughtKey);
+            if (loader.Has(BaselineBadtideKey))
+                BaselineBadtideCount = loader.Get(BaselineBadtideKey);
 
             // Restore progressive chains and counters
             if (loader.Has(ProgressiveChainsKey))
@@ -496,6 +506,10 @@ namespace ArchipelagoIntegration
                 saver.Set(MilestonesKey, SerializeMilestones(Milestones));
             if (CheckedMilestoneIds.Count > 0)
                 saver.Set(CheckedMilestonesKey, string.Join("|", CheckedMilestoneIds));
+            if (BaselineDroughtCount >= 0)
+                saver.Set(BaselineDroughtKey, BaselineDroughtCount);
+            if (BaselineBadtideCount >= 0)
+                saver.Set(BaselineBadtideKey, BaselineBadtideCount);
 
             // Persist progressive chains and counters
             if (ProgressiveChains.Count > 0)

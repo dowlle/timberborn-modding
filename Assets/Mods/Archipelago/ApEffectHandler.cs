@@ -44,8 +44,9 @@ namespace ArchipelagoIntegration
 
         // NeedManager resolved via reflection
         private Type _needManagerType;
-        private MethodInfo _getNeedMethod;   // NeedManager.GetNeed(string)
-        private MethodInfo _setPointsMethod; // Need.SetPoints(float)
+        private FieldInfo _allNeedsField;       // NeedManager.<AllNeeds>k__BackingField
+        private PropertyInfo _needIdProperty;   // Need.NeedId
+        private MethodInfo _setPointsMethod;    // Need.SetPoints(float)
         private bool _needSystemSearched;
 
         // Filler: display name → game GoodId string
@@ -232,6 +233,17 @@ namespace ArchipelagoIntegration
                 var serviceType = _hazardousWeatherService.GetType();
                 var flags = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
 
+                // SetForCycle must be called first to initialize DurationInDays,
+                // otherwise the visual weather systems ignore the event.
+                int duration = _hazardousWeatherService.HazardousWeatherDuration;
+                if (duration <= 0) duration = 5; // fallback to reasonable default
+                var setForCycleMethod = serviceType.GetMethod("SetForCycle", flags);
+                if (setForCycleMethod != null)
+                {
+                    setForCycleMethod.Invoke(_hazardousWeatherService, new object[] { duration });
+                    Debug.Log($"[Archipelago] SetForCycle({duration}) called before starting weather");
+                }
+
                 var startMethod = serviceType.GetMethod("StartHazardousWeather", flags);
                 if (startMethod == null)
                 {
@@ -331,20 +343,35 @@ namespace ArchipelagoIntegration
         {
             EnsureNeedSystemResolved();
 
-            if (_needManagerType == null || _getNeedMethod == null || _setPointsMethod == null)
+            if (_needManagerType == null || _allNeedsField == null ||
+                _needIdProperty == null || _setPointsMethod == null)
             {
-                Debug.LogWarning("[Archipelago] NeedSystem not resolved — cannot set need");
+                Debug.LogWarning("[Archipelago] NeedSystem not fully resolved — cannot set need");
                 return 0;
             }
 
-            // NeedManager extends BaseComponent, not EntityComponent, so
-            // EntityComponentRegistry.GetEnabled<T>() can't be used (constraint mismatch).
-            var managers = UnityEngine.Object.FindObjectsByType(
-                _needManagerType, FindObjectsSortMode.None);
+            // NeedManager extends BaseComponent — use GetEnabled<T>() via reflection
+            // to bypass the IRegisteredComponent compile-time constraint.
+            var getEnabledMethod = _entityComponentRegistry.GetType()
+                .GetMethod("GetEnabled")
+                ?.MakeGenericMethod(_needManagerType);
 
-            if (managers == null || managers.Length == 0)
+            if (getEnabledMethod == null)
             {
-                Debug.LogWarning("[Archipelago] No NeedManager instances found");
+                Debug.LogWarning("[Archipelago] Could not create GetEnabled<NeedManager> method");
+                return 0;
+            }
+
+            var managers = new List<object>();
+            var enumerable = getEnabledMethod.Invoke(_entityComponentRegistry, null)
+                             as System.Collections.IEnumerable;
+            if (enumerable != null)
+                foreach (var comp in enumerable)
+                    managers.Add(comp);
+
+            if (managers.Count == 0)
+            {
+                Debug.LogWarning("[Archipelago] No NeedManager instances found on entities");
                 return 0;
             }
 
@@ -353,11 +380,18 @@ namespace ArchipelagoIntegration
             {
                 try
                 {
-                    var need = _getNeedMethod.Invoke(manager, new object[] { needId });
-                    if (need != null)
+                    var allNeeds = _allNeedsField.GetValue(manager);
+                    if (allNeeds == null) continue;
+
+                    foreach (var need in (System.Collections.IEnumerable)allNeeds)
                     {
-                        _setPointsMethod.Invoke(need, new object[] { points });
-                        count++;
+                        var id = _needIdProperty.GetValue(need) as string;
+                        if (id == needId)
+                        {
+                            _setPointsMethod.Invoke(need, new object[] { points });
+                            count++;
+                            break;
+                        }
                     }
                 }
                 catch (Exception ex)
@@ -379,18 +413,23 @@ namespace ArchipelagoIntegration
 
             if (_needManagerType != null)
             {
-                _getNeedMethod = _needManagerType.GetMethod("GetNeed",
-                    new[] { typeof(string) });
+                // Property getter may fail due to ImmutableArray<> dependency,
+                // so access the auto-property backing field directly.
+                _allNeedsField = _needManagerType.GetField("<AllNeeds>k__BackingField",
+                    BindingFlags.Instance | BindingFlags.NonPublic);
             }
 
             if (needType != null)
             {
+                _needIdProperty = needType.GetProperty("NeedId",
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
                 _setPointsMethod = needType.GetMethod("SetPoints",
                     new[] { typeof(float) });
             }
 
             Debug.Log($"[Archipelago] NeedSystem resolved: Manager={_needManagerType != null}, " +
-                      $"GetNeed={_getNeedMethod != null}, SetPoints={_setPointsMethod != null}");
+                      $"AllNeedsField={_allNeedsField != null}, NeedId={_needIdProperty != null}, " +
+                      $"SetPoints={_setPointsMethod != null}");
         }
 
         // =================================================================
@@ -540,21 +579,35 @@ namespace ArchipelagoIntegration
                 return 0;
             }
 
-            // BonusManager extends BaseComponent, not EntityComponent, so
-            // EntityComponentRegistry.GetEnabled<T>() can't be used (constraint mismatch).
-            // Fall back to FindObjectsByType which finds all MonoBehaviour-derived instances.
-            var managers = UnityEngine.Object.FindObjectsByType(
-                _bonusManagerType, FindObjectsSortMode.None);
+            // BonusManager extends BaseComponent (not UnityEngine.Object).
+            // EntityComponentRegistry.GetEnabled<T>() has an IRegisteredComponent
+            // constraint at compile time, but works via reflection at runtime.
+            var getEnabledMethod = _entityComponentRegistry.GetType()
+                .GetMethod("GetEnabled")
+                ?.MakeGenericMethod(_bonusManagerType);
 
-            if (managers == null || managers.Length == 0)
+            if (getEnabledMethod == null)
             {
-                Debug.LogWarning("[Archipelago] No BonusManager instances found");
+                Debug.LogWarning("[Archipelago] Could not create GetEnabled<BonusManager> method");
+                return 0;
+            }
+
+            var managers = new List<object>();
+            var enumerable = getEnabledMethod.Invoke(_entityComponentRegistry, null)
+                             as System.Collections.IEnumerable;
+            if (enumerable != null)
+                foreach (var comp in enumerable)
+                    managers.Add(comp);
+
+            if (managers.Count == 0)
+            {
+                Debug.LogWarning("[Archipelago] No BonusManager instances found on entities");
                 return 0;
             }
             int count = 0;
 
             // AddBonus takes (string bonusId, float multiplierDelta)
-            foreach (var manager in (System.Collections.IEnumerable)managers)
+            foreach (var manager in managers)
             {
                 try
                 {

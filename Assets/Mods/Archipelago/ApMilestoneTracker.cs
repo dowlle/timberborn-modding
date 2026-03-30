@@ -48,6 +48,8 @@ namespace ArchipelagoIntegration
         private int _lastPopulation = -1;
         private int _lastAdults = -1;
 
+        // Baselines are stored in ArchipelagoSaveData for persistence across save/load.
+
         // Cached reflection for wonder completion (runtime enforces access on publicized internals)
         private MethodInfo _isWonderCompletedMethod;
 
@@ -88,8 +90,17 @@ namespace ArchipelagoIntegration
         {
             _milestones = _saveData.Milestones ?? new List<MilestoneDefinition>();
             _checkedMilestoneIds = new HashSet<long>(_saveData.CheckedMilestoneIds);
+
+            // Snapshot current hazardous weather counts so survival milestones
+            // only fire for events the player lives through during this AP session.
+            if (_saveData.BaselineDroughtCount < 0)
+                _saveData.BaselineDroughtCount = _weatherHistory.GetCyclesCount("DroughtWeather");
+            if (_saveData.BaselineBadtideCount < 0)
+                _saveData.BaselineBadtideCount = _weatherHistory.GetCyclesCount("BadtideWeather");
+
             Debug.Log($"[Archipelago] MilestoneTracker loaded {_milestones.Count} milestones " +
-                      $"({_checkedMilestoneIds.Count} already checked)");
+                      $"({_checkedMilestoneIds.Count} already checked), " +
+                      $"baseline droughts={_saveData.BaselineDroughtCount} badtides={_saveData.BaselineBadtideCount}");
         }
 
         /// <summary>
@@ -171,17 +182,18 @@ namespace ArchipelagoIntegration
         private bool EvaluateSurvival(MilestoneDefinition m)
         {
             // HazardousWeatherId values are "DroughtWeather" and "BadtideWeather"
-            // (matching the class names, not the short display names)
+            // (matching the class names, not the short display names).
+            // Subtract the baseline so we only count events survived during this AP session.
             if (m.Name.Contains("Drought"))
             {
-                int droughtCount = _weatherHistory.GetCyclesCount("DroughtWeather");
-                return droughtCount >= m.Threshold;
+                int survived = _weatherHistory.GetCyclesCount("DroughtWeather") - _saveData.BaselineDroughtCount;
+                return survived >= m.Threshold;
             }
 
             if (m.Name.Contains("Badtide"))
             {
-                int badtideCount = _weatherHistory.GetCyclesCount("BadtideWeather");
-                return badtideCount >= m.Threshold;
+                int survived = _weatherHistory.GetCyclesCount("BadtideWeather") - _saveData.BaselineBadtideCount;
+                return survived >= m.Threshold;
             }
 
             return false;
