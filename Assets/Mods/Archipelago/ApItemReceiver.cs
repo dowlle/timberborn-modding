@@ -76,19 +76,27 @@ namespace ArchipelagoIntegration
             // Track all received items for tier gate evaluation and save persistence
             _saveData.ReceivedItems.Add(item.ItemName);
 
-            // Handle Scout items (reveal building names on a path)
+            // Handle Scout items — idempotent (set-based), safe to replay
             if (item.ItemName.StartsWith("Scout: Path "))
             {
                 var pathLetter = item.ItemName.Substring("Scout: Path ".Length);
                 _saveData.ScoutedPaths.Add(pathLetter);
-                Debug.Log($"[Archipelago] Path {pathLetter} scouted (from {item.SenderName})");
-                ArchipelagoManager.PostLogMessage($"Path {pathLetter} scouted! Building names revealed.");
+                if (!item.IsReplay)
+                {
+                    Debug.Log($"[Archipelago] Path {pathLetter} scouted (from {item.SenderName})");
+                    ArchipelagoManager.PostLogMessage($"Path {pathLetter} scouted! Building names revealed.");
+                }
                 return;
             }
 
-            // Handle Skip items (branching shop)
+            // Handle Skip items — lost on restart (not idempotent)
             if (item.ItemName == "Skip")
             {
+                if (item.IsReplay)
+                {
+                    Debug.Log($"[Archipelago] Skipping replay Skip item (index {item.ItemIndex})");
+                    return;
+                }
                 _saveData.SkipsAvailable++;
                 Debug.Log($"[Archipelago] Received Skip item (total: {_saveData.SkipsAvailable}) from {item.SenderName}");
                 ArchipelagoManager.PostLogMessage($"Received Skip from {item.SenderName} (total: {_saveData.SkipsAvailable})");
@@ -161,6 +169,17 @@ namespace ArchipelagoIntegration
             }
             else
             {
+                // During replay, skip filler (already consumed) and traps (unfair on fresh start)
+                // Boosts are handled idempotently by ApEffectHandler via ActiveBoosts check
+                if (item.IsReplay)
+                {
+                    if (item.ItemName.StartsWith("Filler: ") || item.ItemName.StartsWith("Trap: "))
+                    {
+                        Debug.Log($"[Archipelago] Skipping replay {item.ItemName} (index {item.ItemIndex})");
+                        return;
+                    }
+                }
+
                 // Route non-blueprint items (filler, traps, boosts) to effect handler
                 if (ApEffectHandler.Instance != null)
                 {

@@ -360,6 +360,53 @@ namespace ArchipelagoIntegration
                     OnGoalsAvailable?.Invoke();
                 }
             }
+
+            // Restore checked state from server (critical for fresh-save reconnects)
+            RestoreCheckedStateFromServer();
+
+            // Restore goal completion status from server
+            if (!GoalAchieved && ArchipelagoManager.IsGoalCompleted())
+            {
+                GoalAchieved = true;
+                Debug.Log("[Archipelago] Goal already completed on server — restored");
+            }
+        }
+
+        /// <summary>
+        /// Populates CheckedLocations and CheckedMilestoneIds from the server's
+        /// authoritative list of checked locations. This is essential when connecting
+        /// from a fresh save to an existing AP slot — without it, the player would
+        /// have to rebuy all shop locations.
+        /// </summary>
+        private void RestoreCheckedStateFromServer()
+        {
+            var serverChecked = ArchipelagoManager.GetAllCheckedLocations();
+            if (serverChecked.Count == 0) return;
+
+            // Build a set of milestone location IDs for fast lookup
+            var milestoneLocationIds = new HashSet<long>();
+            if (Milestones != null)
+            {
+                foreach (var m in Milestones)
+                    milestoneLocationIds.Add(m.LocationId);
+            }
+
+            int restoredShop = 0;
+            int restoredMilestones = 0;
+            foreach (var locId in serverChecked)
+            {
+                var locIdStr = locId.ToString();
+                if (CheckedLocations.Add(locIdStr))
+                    restoredShop++;
+
+                if (milestoneLocationIds.Contains(locId) && CheckedMilestoneIds.Add(locId))
+                    restoredMilestones++;
+            }
+
+            if (restoredShop > 0 || restoredMilestones > 0)
+            {
+                Debug.Log($"[Archipelago] Restored from server: {restoredShop} checked locations, {restoredMilestones} milestones");
+            }
         }
 
         /// <summary>

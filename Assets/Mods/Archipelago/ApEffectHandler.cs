@@ -5,6 +5,7 @@ using System.Text.RegularExpressions;
 using Timberborn.EntitySystem;
 using Timberborn.HazardousWeatherSystem;
 using Timberborn.SingletonSystem;
+using Timberborn.WeatherSystem;
 using UnityEngine;
 
 namespace ArchipelagoIntegration
@@ -18,15 +19,12 @@ namespace ArchipelagoIntegration
         internal static ApEffectHandler Instance { get; private set; }
 
         private readonly HazardousWeatherService _hazardousWeatherService;
+        private readonly WeatherService _weatherService;
         private readonly EntityComponentRegistry _entityComponentRegistry;
         private readonly ArchipelagoSaveData _saveData;
 
         // Weather scheduling state
         private readonly Queue<string> _weatherTrapQueue = new();
-        private object _weatherService; // WeatherService resolved via reflection
-        private PropertyInfo _isHazardousWeatherProp;
-        private PropertyInfo _cycleDayProp;
-        private bool _weatherServiceSearched;
 
         // Pending weather: scheduled with 3 in-game day notice
         private string _pendingWeatherType;
@@ -67,17 +65,19 @@ namespace ArchipelagoIntegration
             { "Faster Movement Speed",       ("MovementSpeed", 0.25f) },
             { "Increased Carrying Capacity",  ("CarryingCapacity", 0.50f) },
             { "Faster Working Speed",         ("WorkingSpeed", 0.25f) },
-            { "Faster Tree Growth",           ("GrowthSpeed", 0.50f) },
+            { "Faster Beaver Growth",         ("GrowthSpeed", 0.50f) },
             { "Longer Life Expectancy",       ("LifeExpectancy", 0.25f) },
             { "Better Woodcutting Chance",    ("CuttingSuccessChance", 0.25f) },
         };
 
         public ApEffectHandler(
             HazardousWeatherService hazardousWeatherService,
+            WeatherService weatherService,
             EntityComponentRegistry entityComponentRegistry,
             ArchipelagoSaveData saveData)
         {
             _hazardousWeatherService = hazardousWeatherService;
+            _weatherService = weatherService;
             _entityComponentRegistry = entityComponentRegistry;
             _saveData = saveData;
         }
@@ -203,20 +203,11 @@ namespace ArchipelagoIntegration
 
                 // Get current in-game day to schedule the start
                 int currentDay = GetCurrentCycleDay();
-                if (currentDay >= 0)
-                {
-                    _pendingWeatherType = type;
-                    _pendingWeatherStartDay = currentDay + WEATHER_NOTICE_DAYS;
-                    string weatherName = type == "badtide" ? "Badtide" : "Drought";
-                    Debug.Log($"[Archipelago] Scheduled {type} to start on day {_pendingWeatherStartDay} (current: {currentDay}, notice: {WEATHER_NOTICE_DAYS} days)");
-                    ArchipelagoManager.PostLogMessage($"WARNING: {weatherName} approaching in {WEATHER_NOTICE_DAYS} days! Prepare your colony!");
-                }
-                else
-                {
-                    // Fallback: can't read cycle day, trigger immediately
-                    Debug.LogWarning("[Archipelago] Could not read CycleDay — triggering weather immediately");
-                    ForceStartHazardousWeather(type);
-                }
+                _pendingWeatherType = type;
+                _pendingWeatherStartDay = currentDay + WEATHER_NOTICE_DAYS;
+                string weatherName = type == "badtide" ? "Badtide" : "Drought";
+                Debug.Log($"[Archipelago] Scheduled {type} to start on day {_pendingWeatherStartDay} (current: {currentDay}, notice: {WEATHER_NOTICE_DAYS} days)");
+                ArchipelagoManager.PostLogMessage($"WARNING: {weatherName} approaching in {WEATHER_NOTICE_DAYS} days! Prepare your colony!");
             }
             catch (Exception ex)
             {
@@ -258,16 +249,7 @@ namespace ArchipelagoIntegration
 
         private int GetCurrentCycleDay()
         {
-            EnsureWeatherServiceResolved();
-            if (_weatherService == null || _cycleDayProp == null) return -1;
-            try
-            {
-                return (int)_cycleDayProp.GetValue(_weatherService);
-            }
-            catch
-            {
-                return -1;
-            }
+            return _weatherService.CycleDay;
         }
 
         /// <summary>
@@ -303,45 +285,7 @@ namespace ArchipelagoIntegration
 
         private bool IsHazardousWeatherActive()
         {
-            EnsureWeatherServiceResolved();
-            if (_weatherService == null || _isHazardousWeatherProp == null)
-                return false;
-
-            try
-            {
-                return (bool)_isHazardousWeatherProp.GetValue(_weatherService);
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        private void EnsureWeatherServiceResolved()
-        {
-            if (_weatherServiceSearched) return;
-            _weatherServiceSearched = true;
-
-            // WeatherService is not directly injected — find it via the HazardousWeatherService's
-            // containing service or via EntityComponentRegistry
-            var weatherServiceType = FindType("Timberborn.WeatherSystem.WeatherService");
-            if (weatherServiceType == null)
-            {
-                Debug.LogWarning("[Archipelago] Could not find WeatherService type");
-                return;
-            }
-
-            _isHazardousWeatherProp = weatherServiceType.GetProperty("IsHazardousWeather",
-                BindingFlags.Public | BindingFlags.Instance);
-            _cycleDayProp = weatherServiceType.GetProperty("CycleDay",
-                BindingFlags.Public | BindingFlags.Instance);
-
-            // Try to find the WeatherService instance — it should be a singleton in the game scene
-            // Look for it on any GameObject
-            _weatherService = UnityEngine.Object.FindFirstObjectByType(weatherServiceType);
-
-            Debug.Log($"[Archipelago] WeatherService resolved: instance={_weatherService != null}, " +
-                      $"IsHazardousWeather={_isHazardousWeatherProp != null}, CycleDay={_cycleDayProp != null}");
+            return _weatherService.IsHazardousWeather;
         }
 
         private void TriggerHungryBeavers()
@@ -389,29 +333,19 @@ namespace ArchipelagoIntegration
                 return 0;
             }
 
-            object managers = null;
-            var genericMethod = _entityComponentRegistry.GetType().GetMethod("GetEnabled");
-            if (genericMethod != null && genericMethod.IsGenericMethod)
-            {
-                managers = genericMethod.MakeGenericMethod(_needManagerType)
-                    .Invoke(_entityComponentRegistry, null);
-            }
-            else
-            {
-                var nonGeneric = _entityComponentRegistry.GetType()
-                    .GetMethod("GetEnabled", new[] { typeof(Type) });
-                if (nonGeneric != null)
-                    managers = nonGeneric.Invoke(_entityComponentRegistry, new object[] { _needManagerType });
-            }
+            // NeedManager extends BaseComponent, not EntityComponent, so
+            // EntityComponentRegistry.GetEnabled<T>() can't be used (constraint mismatch).
+            var managers = UnityEngine.Object.FindObjectsByType(
+                _needManagerType, FindObjectsSortMode.None);
 
-            if (managers == null)
+            if (managers == null || managers.Length == 0)
             {
-                Debug.LogWarning("[Archipelago] Could not enumerate NeedManager entities");
+                Debug.LogWarning("[Archipelago] No NeedManager instances found");
                 return 0;
             }
 
             int count = 0;
-            foreach (var manager in (System.Collections.IEnumerable)managers)
+            foreach (var manager in managers)
             {
                 try
                 {
@@ -494,32 +428,22 @@ namespace ArchipelagoIntegration
 
         private void InjectGoods(string goodIdStr, int amount)
         {
-            // Resolve GoodId type via reflection
+            // Resolve GoodAmount type — GiveIgnoringCapacity takes a single GoodAmount param
             if (!_goodIdTypeSearched)
             {
                 _goodIdTypeSearched = true;
-                _goodIdType = Type.GetType("Timberborn.Goods.GoodId, Timberborn.Goods");
-                if (_goodIdType == null)
-                {
-                    // Try loading from any loaded assembly
-                    foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
-                    {
-                        _goodIdType = asm.GetType("Timberborn.Goods.GoodId");
-                        if (_goodIdType != null) break;
-                    }
-                }
+                _goodIdType = FindType("Timberborn.Goods.GoodAmount");
             }
 
             if (_goodIdType == null)
             {
-                Debug.LogWarning("[Archipelago] Could not find GoodId type for goods injection");
+                Debug.LogWarning("[Archipelago] Could not find GoodAmount type for goods injection");
                 return;
             }
 
-            var goodId = Activator.CreateInstance(_goodIdType, goodIdStr);
+            // GoodAmount(string goodId, int amount)
+            var goodAmount = Activator.CreateInstance(_goodIdType, goodIdStr, amount);
 
-            // Find Inventory components on stockpile entities and inject goods
-            // Look for entities with Inventory component that accepts this good type
             var inventoryType = FindType("Timberborn.InventorySystem.Inventory");
             if (inventoryType == null)
             {
@@ -527,51 +451,26 @@ namespace ArchipelagoIntegration
                 return;
             }
 
-            // Use EntityComponentRegistry to find all inventories
-            object inventories = null;
-            var genericMethod = _entityComponentRegistry.GetType().GetMethod("GetEnabled");
-            if (genericMethod != null && genericMethod.IsGenericMethod)
-            {
-                inventories = genericMethod.MakeGenericMethod(inventoryType)
-                    .Invoke(_entityComponentRegistry, null);
-            }
-            else
-            {
-                var nonGeneric = _entityComponentRegistry.GetType()
-                    .GetMethod("GetEnabled", new[] { typeof(Type) });
-                if (nonGeneric != null)
-                    inventories = nonGeneric.Invoke(_entityComponentRegistry, new object[] { inventoryType });
-            }
+            var inventories = UnityEngine.Object.FindObjectsByType(
+                inventoryType, FindObjectsSortMode.None);
 
-            if (inventories == null)
+            if (inventories == null || inventories.Length == 0)
             {
-                Debug.LogWarning("[Archipelago] Could not enumerate Inventory entities");
+                Debug.LogWarning("[Archipelago] No Inventory instances found");
                 return;
             }
 
-            var enumerator = ((System.Collections.IEnumerable)inventories).GetEnumerator();
-
-            int remaining = amount;
-            while (enumerator.MoveNext() && remaining > 0)
+            bool injected = false;
+            foreach (var inventory in inventories)
             {
-                var inventory = enumerator.Current;
-
-                // Try GiveIgnoringCapacity(goodId, amount)
                 var giveMethod = inventory.GetType().GetMethod("GiveIgnoringCapacity");
                 if (giveMethod == null) continue;
 
                 try
                 {
-                    // Check if this inventory accepts this good type
-                    var givesMethod = inventory.GetType().GetMethod("Gives");
-                    if (givesMethod != null)
-                    {
-                        bool gives = (bool)givesMethod.Invoke(inventory, new[] { goodId });
-                        if (!gives) continue;
-                    }
-
-                    giveMethod.Invoke(inventory, new object[] { goodId, remaining });
-                    remaining = 0; // Assume GiveIgnoringCapacity takes all
+                    giveMethod.Invoke(inventory, new[] { goodAmount });
+                    injected = true;
+                    break; // GiveIgnoringCapacity handles the full amount
                 }
                 catch
                 {
@@ -579,8 +478,8 @@ namespace ArchipelagoIntegration
                 }
             }
 
-            if (remaining > 0)
-                Debug.LogWarning($"[Archipelago] Could not inject all goods: {remaining} remaining");
+            if (!injected)
+                Debug.LogWarning($"[Archipelago] Could not inject {amount} {goodIdStr} — no accepting inventory found");
         }
 
         // =================================================================
@@ -595,6 +494,13 @@ namespace ArchipelagoIntegration
             {
                 Debug.LogWarning($"[Archipelago] Unknown boost: {boostName}");
                 ArchipelagoManager.PostLogMessage($"Received boost: {boostName} (effect not yet implemented)");
+                return;
+            }
+
+            // Idempotent: skip if already active (prevents double-application on replay or duplicate delivery)
+            if (_saveData.ActiveBoosts.Contains(boostName))
+            {
+                Debug.Log($"[Archipelago] Boost '{boostName}' already active, skipping duplicate");
                 return;
             }
 
@@ -630,26 +536,15 @@ namespace ArchipelagoIntegration
                 return 0;
             }
 
-            // Find all entities with BonusManager
-            object managers = null;
+            // BonusManager extends BaseComponent, not EntityComponent, so
+            // EntityComponentRegistry.GetEnabled<T>() can't be used (constraint mismatch).
+            // Fall back to FindObjectsByType which finds all MonoBehaviour-derived instances.
+            var managers = UnityEngine.Object.FindObjectsByType(
+                _bonusManagerType, FindObjectsSortMode.None);
 
-            var genericMethod = _entityComponentRegistry.GetType().GetMethod("GetEnabled");
-            if (genericMethod != null && genericMethod.IsGenericMethod)
+            if (managers == null || managers.Length == 0)
             {
-                managers = genericMethod.MakeGenericMethod(_bonusManagerType)
-                    .Invoke(_entityComponentRegistry, null);
-            }
-            else
-            {
-                var nonGeneric = _entityComponentRegistry.GetType()
-                    .GetMethod("GetEnabled", new[] { typeof(Type) });
-                if (nonGeneric != null)
-                    managers = nonGeneric.Invoke(_entityComponentRegistry, new object[] { _bonusManagerType });
-            }
-
-            if (managers == null)
-            {
-                Debug.LogWarning("[Archipelago] Could not enumerate BonusManager entities");
+                Debug.LogWarning("[Archipelago] No BonusManager instances found");
                 return 0;
             }
             int count = 0;

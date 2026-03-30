@@ -282,13 +282,13 @@ namespace ArchipelagoIntegration
 
         private bool EvaluateDroughts(int threshold)
         {
-            int count = _weatherHistory.GetCyclesCount("Drought");
+            int count = _weatherHistory.GetCyclesCount("DroughtWeather");
             return count >= threshold;
         }
 
         private bool EvaluateBadtides(int threshold)
         {
-            int count = _weatherHistory.GetCyclesCount("Badtide");
+            int count = _weatherHistory.GetCyclesCount("BadtideWeather");
             return count >= threshold;
         }
 

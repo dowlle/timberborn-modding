@@ -170,16 +170,17 @@ namespace ArchipelagoIntegration
 
         private bool EvaluateSurvival(MilestoneDefinition m)
         {
+            // HazardousWeatherId values are "DroughtWeather" and "BadtideWeather"
+            // (matching the class names, not the short display names)
             if (m.Name.Contains("Drought"))
             {
-                // GetCyclesCount takes the weather ID string
-                int droughtCount = _weatherHistory.GetCyclesCount("Drought");
+                int droughtCount = _weatherHistory.GetCyclesCount("DroughtWeather");
                 return droughtCount >= m.Threshold;
             }
 
             if (m.Name.Contains("Badtide"))
             {
-                int badtideCount = _weatherHistory.GetCyclesCount("Badtide");
+                int badtideCount = _weatherHistory.GetCyclesCount("BadtideWeather");
                 return badtideCount >= m.Threshold;
             }
 

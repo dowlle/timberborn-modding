@@ -23,8 +23,9 @@ namespace ArchipelagoIntegration
         public readonly string LocationName;
         public readonly string SenderName;
         public readonly ItemFlags Flags;
+        public readonly int    ItemIndex;
 
-        public ApItem(ItemInfo info)
+        public ApItem(ItemInfo info, int itemIndex)
         {
             ItemId       = info.ItemId;
             ItemName     = info.ItemName;
@@ -32,7 +33,15 @@ namespace ArchipelagoIntegration
             LocationName = info.LocationName;
             SenderName   = info.Player?.Name ?? "Server";
             Flags        = info.Flags;
+            ItemIndex    = itemIndex;
         }
+
+        /// <summary>
+        /// True when this item is being replayed from server history (e.g. fresh save
+        /// connecting to an existing AP slot). Consumers should skip non-idempotent
+        /// effects (filler, traps, skips) for replay items.
+        /// </summary>
+        public bool IsReplay => ItemIndex < ArchipelagoManager.ReplayBoundary;
     }
 
     /// <summary>
@@ -73,6 +82,12 @@ namespace ArchipelagoIntegration
 
         /// <summary>Fired on the main thread for AP server messages and log events.</summary>
         public static event Action<string> OnLogMessage;
+
+        /// <summary>
+        /// Items with ItemIndex below this value are replays from server history.
+        /// Set on connect from session.Items.AllItemsReceived.Count.
+        /// </summary>
+        public static int ReplayBoundary { get; private set; }
 
         // ------------------------------------------------------------------ internals
         private static ArchipelagoSession _session;
@@ -123,7 +138,14 @@ namespace ArchipelagoIntegration
                 CurrentSeed  = _session.RoomState.Seed;
                 SlotData     = success.SlotData;
 
-                Debug.Log($"[Archipelago] Connected to {host}:{port} as '{slotName}'. Seed: {CurrentSeed}");
+                // Items with index < this boundary are replays from server history.
+                // By the time TryConnectAndLogin returns, the initial item batch has
+                // already been delivered through OnNetworkItemReceived and queued in
+                // _pendingItems with their original indices. HandleItem (main thread)
+                // will compare each item's index against this boundary.
+                ReplayBoundary = _session.Items.AllItemsReceived.Count;
+
+                Debug.Log($"[Archipelago] Connected to {host}:{port} as '{slotName}'. Seed: {CurrentSeed}, ReplayBoundary: {ReplayBoundary}");
                 Debug.Log($"[Archipelago] SlotData keys: {string.Join(", ", SlotData.Keys)}");
                 _pendingMessages.Enqueue($"Connected to {host}:{port} as '{slotName}'");
                 OnConnectionChanged?.Invoke(true, $"Connected as {slotName}");
@@ -228,6 +250,42 @@ namespace ArchipelagoIntegration
             }
         }
 
+        // ------------------------------------------------------------------ server state queries
+
+        /// <summary>Returns all location IDs the server considers checked for this slot.</summary>
+        public static IReadOnlyCollection<long> GetAllCheckedLocations()
+        {
+            if (_session == null) return Array.Empty<long>();
+            return _session.Locations.AllLocationsChecked;
+        }
+
+        /// <summary>Returns true if the server already considers the goal completed for this slot.</summary>
+        public static bool IsGoalCompleted()
+        {
+            if (_session == null) return false;
+            try
+            {
+                // The AP SDK exposes completion status through RoomState but the
+                // exact API varies by version. Try common approaches via reflection.
+                var roomState = _session.RoomState;
+                var roomType = roomState.GetType();
+
+                // Try GetSlotStatus(int slot) → ArchipelagoClientState
+                var getStatus = roomType.GetMethod("GetSlotStatus");
+                if (getStatus != null)
+                {
+                    var status = getStatus.Invoke(roomState, new object[] { _session.ConnectionInfo.Slot });
+                    return Convert.ToInt32(status) >= 30; // ClientGoal = 30
+                }
+
+                return false;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         // ------------------------------------------------------------------ log messages
 
         /// <summary>
@@ -299,7 +357,7 @@ namespace ArchipelagoIntegration
                 if (index < ProcessedItemIndex)
                     continue; // already handled before this session
 
-                _pendingItems.Enqueue(new ApItem(info));
+                _pendingItems.Enqueue(new ApItem(info, index));
                 ProcessedItemIndex = index + 1;
             }
         }
