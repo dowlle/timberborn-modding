@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Reflection;
 using System.Text.RegularExpressions;
 using Timberborn.EntitySystem;
+using Timberborn.GameCycleSystem;
 using Timberborn.HazardousWeatherSystem;
 using Timberborn.SingletonSystem;
 using Timberborn.WeatherSystem;
@@ -20,6 +21,7 @@ namespace ArchipelagoIntegration
 
         private readonly HazardousWeatherService _hazardousWeatherService;
         private readonly WeatherService _weatherService;
+        private readonly GameCycleService _gameCycleService;
         private readonly EntityComponentRegistry _entityComponentRegistry;
         private readonly ArchipelagoSaveData _saveData;
 
@@ -73,11 +75,13 @@ namespace ArchipelagoIntegration
         public ApEffectHandler(
             HazardousWeatherService hazardousWeatherService,
             WeatherService weatherService,
+            GameCycleService gameCycleService,
             EntityComponentRegistry entityComponentRegistry,
             ArchipelagoSaveData saveData)
         {
             _hazardousWeatherService = hazardousWeatherService;
             _weatherService = weatherService;
+            _gameCycleService = gameCycleService;
             _entityComponentRegistry = entityComponentRegistry;
             _saveData = saveData;
         }
@@ -249,7 +253,7 @@ namespace ArchipelagoIntegration
 
         private int GetCurrentCycleDay()
         {
-            return _weatherService.CycleDay;
+            return _gameCycleService.CycleDay;
         }
 
         /// <summary>
