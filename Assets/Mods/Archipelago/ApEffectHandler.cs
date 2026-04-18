@@ -25,8 +25,16 @@ namespace ArchipelagoIntegration
         private readonly WeatherService _weatherService;
         private readonly GameCycleService _gameCycleService;
         private readonly EntityComponentRegistry _entityComponentRegistry;
+        private readonly EntityRegistry _entityRegistry;
         private readonly BonusTypeSpecService _bonusTypeSpecService;
         private readonly ArchipelagoSaveData _saveData;
+
+        // BaseComponent.GetComponent<T>() open generic method definition — used to
+        // look up BaseComponent-derived types (BonusManager, Inventory, …) per-entity.
+        // MakeGenericMethod is safe here: GetComponent<T> has no constraints.
+        private Type _baseComponentType;
+        private MethodInfo _getComponentOpen;
+        private bool _baseComponentSearched;
 
         // Weather scheduling state
         private readonly Queue<string> _weatherTrapQueue = new();
@@ -86,6 +94,7 @@ namespace ArchipelagoIntegration
             WeatherService weatherService,
             GameCycleService gameCycleService,
             EntityComponentRegistry entityComponentRegistry,
+            EntityRegistry entityRegistry,
             BonusTypeSpecService bonusTypeSpecService,
             ArchipelagoSaveData saveData)
         {
@@ -93,8 +102,77 @@ namespace ArchipelagoIntegration
             _weatherService = weatherService;
             _gameCycleService = gameCycleService;
             _entityComponentRegistry = entityComponentRegistry;
+            _entityRegistry = entityRegistry;
             _bonusTypeSpecService = bonusTypeSpecService;
             _saveData = saveData;
+        }
+
+        /// <summary>
+        /// Resolve BaseComponent.GetComponent{T}() as an open generic MethodInfo.
+        /// This is the entity-traversal primitive for finding BaseComponent-derived
+        /// types (BonusManager, Inventory, etc.) on game entities. Works because
+        /// GetComponent{T} has no generic constraints — MakeGenericMethod is safe.
+        ///
+        /// Contrast with EntityComponentRegistry.GetEnabled{T} which requires
+        /// T : BaseComponent, IRegisteredComponent. BonusManager and Inventory do
+        /// NOT implement IRegisteredComponent, so MakeGenericMethod against the
+        /// registry's method throws ArgumentException at runtime.
+        /// </summary>
+        private void EnsureBaseComponentResolved()
+        {
+            if (_baseComponentSearched) return;
+            _baseComponentSearched = true;
+
+            _baseComponentType = FindType("Timberborn.BaseComponentSystem.BaseComponent");
+            if (_baseComponentType == null)
+            {
+                Debug.LogWarning("[Archipelago] BaseComponent type not found — cannot traverse entity components");
+                return;
+            }
+
+            _getComponentOpen = _baseComponentType
+                .GetMethods(BindingFlags.Instance | BindingFlags.Public)
+                .FirstOrDefault(m => m.Name == "GetComponent"
+                                  && m.IsGenericMethodDefinition
+                                  && m.GetParameters().Length == 0);
+
+            Debug.Log($"[Archipelago] BaseComponent resolved: Type={_baseComponentType != null}, " +
+                      $"GetComponent<T>={_getComponentOpen != null}");
+        }
+
+        /// <summary>
+        /// Iterate every game entity and collect the first non-null component of
+        /// the given BaseComponent-derived type. Used for both BonusManager (boosts)
+        /// and Inventory (filler) lookups.
+        /// </summary>
+        private List<object> FindEntityComponents(Type componentType)
+        {
+            var result = new List<object>();
+            EnsureBaseComponentResolved();
+            if (_getComponentOpen == null) return result;
+
+            MethodInfo typedGetComponent;
+            try
+            {
+                typedGetComponent = _getComponentOpen.MakeGenericMethod(componentType);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[Archipelago] MakeGenericMethod(GetComponent<{componentType.Name}>) failed: {ex.Message}");
+                return result;
+            }
+
+            var entities = _entityRegistry.Entities;
+            if (entities == null) return result;
+
+            foreach (var entity in entities)
+            {
+                object comp = null;
+                try { comp = typedGetComponent.Invoke(entity, null); }
+                catch { /* entity can't host this type */ }
+                if (comp != null) result.Add(comp);
+            }
+            return result;
         }
 
         public void Load()
@@ -360,24 +438,10 @@ namespace ArchipelagoIntegration
                 return 0;
             }
 
-            // NeedManager extends BaseComponent — use GetEnabled<T>() via reflection
-            // to bypass the IRegisteredComponent compile-time constraint.
-            var getEnabledMethod = _entityComponentRegistry.GetType()
-                .GetMethod("GetEnabled")
-                ?.MakeGenericMethod(_needManagerType);
-
-            if (getEnabledMethod == null)
-            {
-                Debug.LogWarning("[Archipelago] Could not create GetEnabled<NeedManager> method");
-                return 0;
-            }
-
-            var managers = new List<object>();
-            var enumerable = getEnabledMethod.Invoke(_entityComponentRegistry, null)
-                             as System.Collections.IEnumerable;
-            if (enumerable != null)
-                foreach (var comp in enumerable)
-                    managers.Add(comp);
+            // NeedManager extends BaseComponent but does not implement IRegisteredComponent
+            // (same as BonusManager / Inventory) — use EntityRegistry.Entities + per-entity
+            // GetComponent<T>() instead of EntityComponentRegistry.GetEnabled<T>().
+            var managers = FindEntityComponents(_needManagerType);
 
             if (managers.Count == 0)
             {
@@ -497,25 +561,11 @@ namespace ArchipelagoIntegration
             // GoodAmount(string goodId, int amount) — verified ctor signature
             var goodAmount = Activator.CreateInstance(_goodAmountType, goodIdStr, amount);
 
-            // Inventory extends BaseComponent, so UnityEngine.Object.FindObjectsByType
-            // returns empty. Must use EntityComponentRegistry.GetEnabled<T>() via
-            // MakeGenericMethod at runtime — same pattern as ApplyBonusToAllEntities.
-            var getEnabledMethod = _entityComponentRegistry.GetType()
-                .GetMethod("GetEnabled")
-                ?.MakeGenericMethod(_inventoryType);
-
-            if (getEnabledMethod == null)
-            {
-                Debug.LogWarning("[Archipelago] Could not create GetEnabled<Inventory> method");
-                return;
-            }
-
-            var inventories = new List<object>();
-            var enumerable = getEnabledMethod.Invoke(_entityComponentRegistry, null)
-                             as System.Collections.IEnumerable;
-            if (enumerable != null)
-                foreach (var inv in enumerable)
-                    inventories.Add(inv);
+            // Inventory extends BaseComponent but does NOT implement IRegisteredComponent,
+            // so EntityComponentRegistry.GetEnabled<T>() via MakeGenericMethod throws
+            // ArgumentException at runtime (same crash as BonusManager). Instead iterate
+            // EntityRegistry.Entities and use BaseComponent.GetComponent<T>() per entity.
+            var inventories = FindEntityComponents(_inventoryType);
 
             if (inventories.Count == 0)
             {
@@ -633,6 +683,16 @@ namespace ArchipelagoIntegration
 
         /// <summary>
         /// Apply a bonus to all entities that have a BonusManager component.
+        ///
+        /// Previously tried EntityComponentRegistry.GetEnabled{T}() via
+        /// MakeGenericMethod, but GetEnabled has a `T : IRegisteredComponent`
+        /// constraint that MakeGenericMethod DOES enforce at runtime. BonusManager
+        /// only implements IAwakableComponent, so that call threw
+        /// `ArgumentException: Invalid generic arguments` (crashed the mod).
+        ///
+        /// Instead: iterate EntityRegistry.Entities (ReadOnlyList&lt;EntityComponent&gt;)
+        /// and use BaseComponent.GetComponent{T}() on each. GetComponent{T} is
+        /// unconstrained so MakeGenericMethod is safe.
         /// </summary>
         private int ApplyBonusToAllEntities(string bonusIdStr, float multiplierDelta)
         {
@@ -644,38 +704,20 @@ namespace ArchipelagoIntegration
                 return 0;
             }
 
-            // BonusManager extends BaseComponent (not UnityEngine.Object).
-            // EntityComponentRegistry.GetEnabled<T>() has an IRegisteredComponent
-            // constraint at compile time, but works via reflection at runtime.
-            var getEnabledMethod = _entityComponentRegistry.GetType()
-                .GetMethod("GetEnabled")
-                ?.MakeGenericMethod(_bonusManagerType);
-
-            if (getEnabledMethod == null)
-            {
-                Debug.LogWarning("[Archipelago] Could not create GetEnabled<BonusManager> method");
-                return 0;
-            }
-
-            var managers = new List<object>();
-            var enumerable = getEnabledMethod.Invoke(_entityComponentRegistry, null)
-                             as System.Collections.IEnumerable;
-            if (enumerable != null)
-                foreach (var comp in enumerable)
-                    managers.Add(comp);
+            var managers = FindEntityComponents(_bonusManagerType);
 
             if (managers.Count == 0)
             {
                 Debug.LogWarning("[Archipelago] No BonusManager instances found on entities");
                 return 0;
             }
-            int count = 0;
 
-            // AddBonus takes (string bonusId, float multiplierDelta)
+            int count = 0;
             foreach (var manager in managers)
             {
                 try
                 {
+                    // AddBonus takes (string bonusId, float multiplierDelta)
                     _addBonusMethod.Invoke(manager, new object[] { bonusIdStr, multiplierDelta });
                     count++;
                 }
