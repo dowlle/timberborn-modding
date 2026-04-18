@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using System.Text.RegularExpressions;
+using Timberborn.BonusSystem;
 using Timberborn.EntitySystem;
 using Timberborn.GameCycleSystem;
 using Timberborn.HazardousWeatherSystem;
@@ -23,6 +25,7 @@ namespace ArchipelagoIntegration
         private readonly WeatherService _weatherService;
         private readonly GameCycleService _gameCycleService;
         private readonly EntityComponentRegistry _entityComponentRegistry;
+        private readonly BonusTypeSpecService _bonusTypeSpecService;
         private readonly ArchipelagoSaveData _saveData;
 
         // Weather scheduling state
@@ -83,12 +86,14 @@ namespace ArchipelagoIntegration
             WeatherService weatherService,
             GameCycleService gameCycleService,
             EntityComponentRegistry entityComponentRegistry,
+            BonusTypeSpecService bonusTypeSpecService,
             ArchipelagoSaveData saveData)
         {
             _hazardousWeatherService = hazardousWeatherService;
             _weatherService = weatherService;
             _gameCycleService = gameCycleService;
             _entityComponentRegistry = entityComponentRegistry;
+            _bonusTypeSpecService = bonusTypeSpecService;
             _saveData = saveData;
         }
 
@@ -683,25 +688,48 @@ namespace ArchipelagoIntegration
             return count;
         }
 
+        /// <summary>
+        /// Validate BoostMapping BonusIds against the live game's BonusTypeSpecService
+        /// at load time. Any mapped id not present in the game is a typo or stale
+        /// string that would have silently failed at boost-apply time. Logs a
+        /// warning so these bugs surface at startup instead of during playtest.
+        ///
+        /// The v0.0.1 playtest found four such mismatches (WorkSpeed vs WorkingSpeed,
+        /// TreeGrowth vs GrowthSpeed, Longevity vs LifeExpectancy, WoodcuttingYield
+        /// vs CuttingSuccessChance). This check would have caught all of them at load.
+        /// </summary>
         private void DiscoverBonusIds()
         {
             try
             {
-                var serviceType = FindType("Timberborn.BonusSystem.BonusTypeSpecService");
-                if (serviceType == null) return;
+                var liveIds = new HashSet<string>(_bonusTypeSpecService.BonusIds ?? Enumerable.Empty<string>());
+                var mappedIds = BoostMapping.Values.Select(v => v.bonusId).ToHashSet();
 
-                var bonusIdsProp = serviceType.GetProperty("BonusIds",
-                    BindingFlags.Public | BindingFlags.Instance);
-                if (bonusIdsProp == null) return;
+                if (liveIds.Count == 0)
+                {
+                    Debug.LogWarning("[Archipelago] BonusTypeSpecService reports no BonusIds at load time — " +
+                                     "validation skipped (may run before specs are loaded).");
+                    return;
+                }
 
-                // BonusTypeSpecService is a singleton — find it via EntityComponentRegistry or direct search
-                // We can't easily get the instance here, but log the spec type info for debugging
-                Debug.Log("[Archipelago] BonusTypeSpec IDs available via BonusTypeSpecService.BonusIds at runtime");
-                Debug.Log($"[Archipelago] Configured boost BonusIds: {string.Join(", ", BoostMapping.Values)}");
+                var missing = mappedIds.Where(id => !liveIds.Contains(id)).ToList();
+
+                if (missing.Count == 0)
+                {
+                    Debug.Log($"[Archipelago] BonusId validation passed — all {mappedIds.Count} mapped ids " +
+                              $"present in game ({liveIds.Count} live ids total).");
+                }
+                else
+                {
+                    Debug.LogWarning($"[Archipelago] BonusId validation FAILED — mapping references " +
+                                     $"{missing.Count} unknown id(s): [{string.Join(", ", missing)}]. " +
+                                     $"Live ids: [{string.Join(", ", liveIds.OrderBy(s => s))}]. " +
+                                     "Affected boosts will silently fail to apply until the mapping is corrected.");
+                }
             }
             catch (Exception ex)
             {
-                Debug.LogWarning($"[Archipelago] BonusId discovery failed: {ex.Message}");
+                Debug.LogWarning($"[Archipelago] BonusId validation threw: {ex.Message}");
             }
         }
 
