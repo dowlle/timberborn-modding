@@ -162,10 +162,9 @@ namespace ArchipelagoIntegration
                 return result;
             }
 
-            var entities = _entityRegistry.Entities;
-            if (entities == null) return result;
-
-            foreach (var entity in entities)
+            // ReadOnlyList<EntityComponent> is a struct — always safe to iterate.
+            // Empty lists just produce zero iterations.
+            foreach (var entity in _entityRegistry.Entities)
             {
                 object comp = null;
                 try { comp = typedGetComponent.Invoke(entity, null); }
@@ -179,6 +178,7 @@ namespace ArchipelagoIntegration
         {
             Instance = this;
             DiscoverBonusIds();
+            RunReflectionDryRuns();
 
             // Re-apply persisted boosts to all existing entities
             if (_saveData.ActiveBoosts.Count > 0)
@@ -187,6 +187,87 @@ namespace ArchipelagoIntegration
                 foreach (var boostName in _saveData.ActiveBoosts)
                     ApplyBoostToAllEntities(boostName);
             }
+        }
+
+        /// <summary>
+        /// Exercise every reflection path the mod depends on at Load() so that
+        /// incorrect type assumptions, missing methods, or constraint-enforced
+        /// MakeGenericMethod failures surface LOUDLY in Player.log at startup
+        /// instead of crashing the game on first use of a feature.
+        ///
+        /// Added after the 2026-04-18 crash where ApplyBonusToAllEntities threw
+        /// ArgumentException on the first boost because GetEnabled&lt;T&gt; had an
+        /// IRegisteredComponent constraint that MakeGenericMethod enforces.
+        /// That error only surfaced mid-game; a dry-run at Load() would have
+        /// caught it immediately.
+        /// </summary>
+        private void RunReflectionDryRuns()
+        {
+            EnsureBaseComponentResolved();
+            EnsureBonusSystemResolved();
+            EnsureInventorySystemResolved();
+            EnsureNeedSystemResolved();
+
+            Debug.Log("[Archipelago] Reflection dry-run beginning…");
+
+            // 1) BonusManager lookup (boost pipeline)
+            if (_bonusManagerType != null)
+            {
+                try
+                {
+                    var bms = FindEntityComponents(_bonusManagerType);
+                    Debug.Log($"[Archipelago] Dry-run: BonusManager enumerable — {bms.Count} instance(s) " +
+                              $"(0 is normal at fresh-game Load before entities instantiate).");
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[Archipelago] Dry-run FAILED: BonusManager enumeration threw: {ex.Message}");
+                }
+            }
+
+            // 2) Inventory lookup + GiveIgnoringCapacity (filler pipeline)
+            if (_inventoryType != null)
+            {
+                try
+                {
+                    var invs = FindEntityComponents(_inventoryType);
+                    Debug.Log($"[Archipelago] Dry-run: Inventory enumerable — {invs.Count} instance(s).");
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[Archipelago] Dry-run FAILED: Inventory enumeration threw: {ex.Message}");
+                }
+            }
+
+            // 3) NeedManager lookup (trap pipeline)
+            if (_needManagerType != null)
+            {
+                try
+                {
+                    var nms = FindEntityComponents(_needManagerType);
+                    Debug.Log($"[Archipelago] Dry-run: NeedManager enumerable — {nms.Count} instance(s).");
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[Archipelago] Dry-run FAILED: NeedManager enumeration threw: {ex.Message}");
+                }
+            }
+
+            // 4) GoodAmount construction (filler pipeline secondary check)
+            if (_goodAmountType != null)
+            {
+                try
+                {
+                    Activator.CreateInstance(_goodAmountType, "Log", 1);
+                    Debug.Log("[Archipelago] Dry-run: GoodAmount('Log', 1) ctor OK.");
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[Archipelago] Dry-run FAILED: GoodAmount ctor threw: {ex.Message}");
+                }
+            }
+
+            Debug.Log("[Archipelago] Reflection dry-run complete.");
         }
 
         public void Unload()
