@@ -17,7 +17,7 @@ namespace ArchipelagoIntegration
     /// </summary>
     public class MilestoneDefinition
     {
-        public string Name;        // "Population: Reach 10 Beavers"
+        public string Name;        // "Population: Reach 15 Beavers"
         public long   LocationId;  // AP location ID
         public string Type;        // "population", "wellbeing", "survival", "wonder"
         public int    Threshold;   // numeric threshold (10, 5, 1, etc.)
