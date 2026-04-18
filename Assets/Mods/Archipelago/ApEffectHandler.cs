@@ -436,43 +436,30 @@ namespace ArchipelagoIntegration
         }
 
         /// <summary>
-        /// Set things up so the game naturally transitions to hazardous weather
-        /// within WEATHER_NOTICE_DAYS:
-        /// 1. Shorten the current temperate cycle (if its natural duration is
-        ///    longer than the notice period). TemperateWeatherDuration is the
-        ///    total day-length of the current cycle; the cycle ends when
-        ///    GameCycleService.CycleDay &gt;= TemperateWeatherDuration.
-        /// 2. Call HazardousWeatherService.SetForCycle(duration) so that when
-        ///    the temperate cycle ends, the game's OnCycleEndedEvent handler
-        ///    sees a non-zero HazardousWeatherDuration and transitions to
-        ///    a hazardous cycle. The game picks drought vs badtide itself via
-        ///    its HazardousWeatherRandomizer.
+        /// Shorten the current temperate cycle so the game's natural
+        /// temperate -> hazardous transition happens within WEATHER_NOTICE_DAYS.
+        /// Timberborn alternates temperate and hazardous cycles on its own, so
+        /// the trap just needs to end the current temperate faster; the game
+        /// takes care of the actual transition, duration, and random drought-vs-
+        /// badtide pick via its HazardousWeatherRandomizer.
+        /// TemperateWeatherDuration is the total day-length of the current
+        /// cycle; the cycle ends when GameCycleService.CycleDay reaches it.
         /// </summary>
         private void ScheduleHazardousWeather()
         {
             try
             {
-                // Queue next cycle to be hazardous. SetForCycle sets HazardousWeatherDuration
-                // to a random value in the configured range.
-                var hwServiceType = _hazardousWeatherService.GetType();
-                var flags = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
-
-                int requestedHazardousDuration = _hazardousWeatherService.HazardousWeatherDuration;
-                if (requestedHazardousDuration <= 0) requestedHazardousDuration = 5;
-
-                var setForCycleMethod = hwServiceType.GetMethod("SetForCycle", flags);
-                if (setForCycleMethod != null)
-                {
-                    setForCycleMethod.Invoke(_hazardousWeatherService, new object[] { requestedHazardousDuration });
-                }
-                Debug.Log($"[Archipelago] HazardousWeatherService queued for next cycle — " +
-                          $"HazardousWeatherDuration={_hazardousWeatherService.HazardousWeatherDuration}");
-
                 // Mark that we've scheduled a trap. Prevents subsequent traps from
                 // double-scheduling and blocks queue drain until the hazardous cycle
                 // actually starts (when IsHazardousWeather flips true).
                 _trapScheduledAwaitingTransition = true;
 
+                // All we need to do is shorten the current temperate cycle. The game
+                // already alternates temperate -> hazardous -> temperate; ending the
+                // current temperate earlier just accelerates the natural transition.
+                // The game sets HazardousWeatherDuration itself as part of its normal
+                // cycle scheduling, so we don't need to call SetForCycle.
+                //
                 // Shorten the current temperate cycle so transition happens soon, but
                 // only if natural duration is LONGER than our notice period. If it's
                 // already shorter, leave it alone (hazardous will fire naturally sooner).
