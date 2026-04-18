@@ -457,19 +457,39 @@ namespace ArchipelagoIntegration
                 // Shorten the current temperate cycle so transition happens soon, but
                 // only if natural duration is LONGER than our notice period. If it's
                 // already shorter, leave it alone (hazardous will fire naturally sooner).
+                //
+                // Note: TemperateWeatherDuration has a public getter but a non-public
+                // setter — pythonnet reflection showed W=True because the backing
+                // field is publicized, but the C# property setter isn't accessible.
+                // Write the backing field directly via reflection (same pattern as
+                // <AllNeeds>k__BackingField in the NeedSystem code).
                 int currentDay = _gameCycleService.CycleDay;
                 int targetEndDay = currentDay + WEATHER_NOTICE_DAYS;
                 int naturalDuration = _temperateWeatherDurationService.TemperateWeatherDuration;
 
                 if (naturalDuration > targetEndDay)
                 {
-                    _temperateWeatherDurationService.TemperateWeatherDuration = targetEndDay;
-                    Debug.Log($"[Archipelago] Shortened temperate: " +
-                              $"TemperateWeatherDuration {naturalDuration} -> {targetEndDay} " +
-                              $"(current day {currentDay}, notice {WEATHER_NOTICE_DAYS} days). " +
-                              "Game will transition to hazardous at cycle end.");
-                    ArchipelagoManager.PostLogMessage(
-                        $"WARNING: Hazardous weather incoming in {WEATHER_NOTICE_DAYS} days! Prepare your colony!");
+                    var tempServiceType = _temperateWeatherDurationService.GetType();
+                    var backingField = tempServiceType.GetField(
+                        "<TemperateWeatherDuration>k__BackingField",
+                        BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                    if (backingField != null)
+                    {
+                        backingField.SetValue(_temperateWeatherDurationService, targetEndDay);
+                        Debug.Log($"[Archipelago] Shortened temperate: " +
+                                  $"TemperateWeatherDuration {naturalDuration} -> {targetEndDay} " +
+                                  $"(current day {currentDay}, notice {WEATHER_NOTICE_DAYS} days). " +
+                                  "Game will transition to hazardous at cycle end.");
+                        ArchipelagoManager.PostLogMessage(
+                            $"WARNING: Hazardous weather incoming in {WEATHER_NOTICE_DAYS} days! Prepare your colony!");
+                    }
+                    else
+                    {
+                        Debug.LogWarning("[Archipelago] Could not find <TemperateWeatherDuration>k__BackingField; " +
+                                         "cycle will end at its natural duration instead of shortened notice.");
+                        ArchipelagoManager.PostLogMessage(
+                            $"WARNING: Hazardous weather incoming in ~{Math.Max(0, naturalDuration - currentDay)} days! Prepare your colony!");
+                    }
                 }
                 else
                 {
