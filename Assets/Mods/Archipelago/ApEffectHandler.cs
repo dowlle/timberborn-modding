@@ -24,6 +24,7 @@ namespace ArchipelagoIntegration
 
         private readonly HazardousWeatherService _hazardousWeatherService;
         private readonly WeatherService _weatherService;
+        private readonly TemperateWeatherDurationService _temperateWeatherDurationService;
         private readonly GameCycleService _gameCycleService;
         private readonly EntityComponentRegistry _entityComponentRegistry;
         private readonly EntityRegistry _entityRegistry;
@@ -38,12 +39,14 @@ namespace ArchipelagoIntegration
         private MethodInfo _getComponentOpen;
         private bool _baseComponentSearched;
 
-        // Weather scheduling state
+        // Weather trap queue: additional Hazardous Weather traps that arrive
+        // while a hazardous cycle is already active or pending. Drained by
+        // ProcessWeatherQueue() once the current cycle ends.
         private readonly Queue<string> _weatherTrapQueue = new();
 
-        // Pending weather: scheduled with 3 in-game day notice
-        private string _pendingWeatherType;
-        private int _pendingWeatherStartDay = -1;
+        // In-game days of warning the player gets before a queued hazardous
+        // cycle starts. Used to shorten the current temperate cycle so the
+        // natural transition happens sooner but still after a visible countdown.
         private const int WEATHER_NOTICE_DAYS = 3;
 
         // Filler injection pipeline: GoodAmount struct + Inventory.GiveIgnoringCapacity
@@ -94,6 +97,7 @@ namespace ArchipelagoIntegration
         public ApEffectHandler(
             HazardousWeatherService hazardousWeatherService,
             WeatherService weatherService,
+            TemperateWeatherDurationService temperateWeatherDurationService,
             GameCycleService gameCycleService,
             EntityComponentRegistry entityComponentRegistry,
             EntityRegistry entityRegistry,
@@ -103,6 +107,7 @@ namespace ArchipelagoIntegration
         {
             _hazardousWeatherService = hazardousWeatherService;
             _weatherService = weatherService;
+            _temperateWeatherDurationService = temperateWeatherDurationService;
             _gameCycleService = gameCycleService;
             _entityComponentRegistry = entityComponentRegistry;
             _entityRegistry = entityRegistry;
@@ -354,11 +359,8 @@ namespace ArchipelagoIntegration
 
             switch (trapName)
             {
-                case "Early Drought":
-                    TriggerHazardousWeather("drought");
-                    break;
-                case "Badwater Leak":
-                    TriggerHazardousWeather("badtide");
+                case "Hazardous Weather":
+                    TriggerHazardousWeather();
                     break;
                 case "Hungry Beavers":
                     TriggerHungryBeavers();
@@ -366,18 +368,36 @@ namespace ArchipelagoIntegration
                 case "Thirsty Beavers":
                     TriggerThirstyBeavers();
                     break;
+                // Legacy trap names kept for backwards compat with any v0.0.2-era
+                // seeds still in circulation; both now route through the generic
+                // weather path so the game's own randomizer picks drought/badtide.
+                case "Early Drought":
+                case "Badwater Leak":
+                    Debug.Log($"[Archipelago] Legacy trap '{trapName}' routed to generic Hazardous Weather.");
+                    TriggerHazardousWeather();
+                    break;
                 default:
                     Debug.LogWarning($"[Archipelago] Unknown trap: {trapName}");
                     break;
             }
         }
 
-        private void TriggerHazardousWeather(string type)
+        /// <summary>
+        /// Entry point for the consolidated Hazardous Weather trap. Instead of
+        /// forcing a specific weather type mid-cycle (which the v0.0.2 approach
+        /// attempted and which only updated history state, not the visual weather
+        /// widget), this shortens the current temperate cycle and lets the game's
+        /// own HazardousWeatherRandomizer pick drought vs badtide at natural
+        /// cycle end. The player gets a proper countdown UI and the weather
+        /// widget transitions correctly.
+        /// </summary>
+        private void TriggerHazardousWeather()
         {
-            // Check if hazardous weather is already active or pending (scheduled but not yet started)
-            if (IsHazardousWeatherActive() || _pendingWeatherType != null)
+            bool hazardousActive = _weatherService.IsHazardousWeather;
+            bool hazardousPending = _hazardousWeatherService.HazardousWeatherDuration > 0 && !hazardousActive;
+
+            if (hazardousActive || hazardousPending)
             {
-                // Read trap_mode from slot data: 0=queue, 1=skip
                 int trapMode = 0;
                 if (ArchipelagoManager.SlotData != null
                     && ArchipelagoManager.SlotData.TryGetValue("trap_mode", out var modeObj))
@@ -387,143 +407,103 @@ namespace ArchipelagoIntegration
 
                 if (trapMode == 1)
                 {
-                    Debug.Log($"[Archipelago] Weather trap '{type}' skipped (weather active, trap_mode=skip)");
-                    ArchipelagoManager.PostLogMessage($"Trap skipped: {type} (weather already active)");
+                    Debug.Log("[Archipelago] Hazardous Weather skipped (already active/pending, trap_mode=skip)");
+                    ArchipelagoManager.PostLogMessage("Trap skipped: Hazardous Weather (weather already active)");
                     return;
                 }
 
-                _weatherTrapQueue.Enqueue(type);
-                Debug.Log($"[Archipelago] Weather trap '{type}' queued (weather active, queue size: {_weatherTrapQueue.Count})");
-                ArchipelagoManager.PostLogMessage($"Trap queued: {type} (weather already active)");
+                _weatherTrapQueue.Enqueue("HazardousWeather");
+                Debug.Log($"[Archipelago] Hazardous Weather queued (queue size: {_weatherTrapQueue.Count})");
+                ArchipelagoManager.PostLogMessage("Trap queued: Hazardous Weather (weather already active)");
                 return;
             }
 
-            ScheduleHazardousWeather(type);
+            ScheduleHazardousWeather();
         }
 
         /// <summary>
-        /// Schedules hazardous weather with a 3 in-game day notice period.
-        /// Sets CurrentCycleHazardousWeather immediately (so the game knows what's
-        /// coming), then waits for WEATHER_NOTICE_DAYS before calling
-        /// StartHazardousWeather(). The AP event log announces the incoming weather.
+        /// Set things up so the game naturally transitions to hazardous weather
+        /// within WEATHER_NOTICE_DAYS:
+        /// 1. Shorten the current temperate cycle (if its natural duration is
+        ///    longer than the notice period). TemperateWeatherDuration is the
+        ///    total day-length of the current cycle; the cycle ends when
+        ///    GameCycleService.CycleDay &gt;= TemperateWeatherDuration.
+        /// 2. Call HazardousWeatherService.SetForCycle(duration) so that when
+        ///    the temperate cycle ends, the game's OnCycleEndedEvent handler
+        ///    sees a non-zero HazardousWeatherDuration and transitions to
+        ///    a hazardous cycle. The game picks drought vs badtide itself via
+        ///    its HazardousWeatherRandomizer.
         /// </summary>
-        private void ScheduleHazardousWeather(string type)
+        private void ScheduleHazardousWeather()
         {
             try
             {
-                // Set the weather type on HazardousWeatherService so the game
-                // knows which hazard is coming
-                var serviceType = _hazardousWeatherService.GetType();
+                // Queue next cycle to be hazardous. SetForCycle sets HazardousWeatherDuration
+                // to a random value in the configured range.
+                var hwServiceType = _hazardousWeatherService.GetType();
                 var flags = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
 
-                string fieldName = type == "badtide" ? "_badtideWeather" : "_droughtWeather";
-                var weatherField = serviceType.GetField(fieldName, flags);
-                if (weatherField != null)
-                {
-                    var weatherInstance = weatherField.GetValue(_hazardousWeatherService);
-                    var setCurrent = serviceType.GetProperty("CurrentCycleHazardousWeather", flags);
-                    if (setCurrent != null && weatherInstance != null)
-                    {
-                        setCurrent.SetValue(_hazardousWeatherService, weatherInstance);
-                    }
-                }
+                int requestedHazardousDuration = _hazardousWeatherService.HazardousWeatherDuration;
+                if (requestedHazardousDuration <= 0) requestedHazardousDuration = 5;
 
-                // Get current in-game day to schedule the start
-                int currentDay = GetCurrentCycleDay();
-                _pendingWeatherType = type;
-                _pendingWeatherStartDay = currentDay + WEATHER_NOTICE_DAYS;
-                string weatherName = type == "badtide" ? "Badtide" : "Drought";
-                Debug.Log($"[Archipelago] Scheduled {type} to start on day {_pendingWeatherStartDay} (current: {currentDay}, notice: {WEATHER_NOTICE_DAYS} days)");
-                ArchipelagoManager.PostLogMessage($"WARNING: {weatherName} approaching in {WEATHER_NOTICE_DAYS} days! Prepare your colony!");
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning($"[Archipelago] Failed to schedule {type}: {ex.Message}");
-                // Fallback to immediate
-                ForceStartHazardousWeather(type);
-            }
-        }
-
-        /// <summary>
-        /// Force-starts hazardous weather immediately (fallback when scheduling fails,
-        /// or called by ProcessWeatherQueue when notice period expires).
-        /// </summary>
-        private void ForceStartHazardousWeather(string type)
-        {
-            try
-            {
-                var serviceType = _hazardousWeatherService.GetType();
-                var flags = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
-
-                // SetForCycle must be called first to initialize DurationInDays,
-                // otherwise the visual weather systems ignore the event.
-                int duration = _hazardousWeatherService.HazardousWeatherDuration;
-                if (duration <= 0) duration = 5; // fallback to reasonable default
-                var setForCycleMethod = serviceType.GetMethod("SetForCycle", flags);
+                var setForCycleMethod = hwServiceType.GetMethod("SetForCycle", flags);
                 if (setForCycleMethod != null)
                 {
-                    setForCycleMethod.Invoke(_hazardousWeatherService, new object[] { duration });
-                    Debug.Log($"[Archipelago] SetForCycle({duration}) called before starting weather");
+                    setForCycleMethod.Invoke(_hazardousWeatherService, new object[] { requestedHazardousDuration });
                 }
+                Debug.Log($"[Archipelago] HazardousWeatherService queued for next cycle — " +
+                          $"HazardousWeatherDuration={_hazardousWeatherService.HazardousWeatherDuration}");
 
-                var startMethod = serviceType.GetMethod("StartHazardousWeather", flags);
-                if (startMethod == null)
+                // Shorten the current temperate cycle so transition happens soon, but
+                // only if natural duration is LONGER than our notice period. If it's
+                // already shorter, leave it alone (hazardous will fire naturally sooner).
+                int currentDay = _gameCycleService.CycleDay;
+                int targetEndDay = currentDay + WEATHER_NOTICE_DAYS;
+                int naturalDuration = _temperateWeatherDurationService.TemperateWeatherDuration;
+
+                if (naturalDuration > targetEndDay)
                 {
-                    Debug.LogWarning("[Archipelago] Could not find StartHazardousWeather method");
-                    return;
+                    _temperateWeatherDurationService.TemperateWeatherDuration = targetEndDay;
+                    Debug.Log($"[Archipelago] Shortened temperate: " +
+                              $"TemperateWeatherDuration {naturalDuration} -> {targetEndDay} " +
+                              $"(current day {currentDay}, notice {WEATHER_NOTICE_DAYS} days). " +
+                              "Game will transition to hazardous at cycle end.");
+                    ArchipelagoManager.PostLogMessage(
+                        $"WARNING: Hazardous weather incoming in {WEATHER_NOTICE_DAYS} days! Prepare your colony!");
                 }
-
-                startMethod.Invoke(_hazardousWeatherService, null);
-                string weatherName = type == "badtide" ? "Badtide" : "Drought";
-                Debug.Log($"[Archipelago] Triggered hazardous weather ({type})");
-                ArchipelagoManager.PostLogMessage($"The {weatherName} has begun!");
+                else
+                {
+                    int daysRemaining = naturalDuration - currentDay;
+                    Debug.Log($"[Archipelago] Temperate already ending soon " +
+                              $"(natural end day {naturalDuration}, current day {currentDay}, " +
+                              $"~{daysRemaining} days). Leaving duration unchanged; " +
+                              "hazardous will fire at natural cycle end.");
+                    ArchipelagoManager.PostLogMessage(
+                        $"WARNING: Hazardous weather incoming in ~{Math.Max(0, daysRemaining)} days! Prepare your colony!");
+                }
             }
             catch (Exception ex)
             {
-                Debug.LogWarning($"[Archipelago] Failed to trigger {type}: {ex.Message}");
-                ArchipelagoManager.PostLogMessage($"Trap: {type} (failed to trigger)");
+                Debug.LogWarning($"[Archipelago] Failed to schedule Hazardous Weather: {ex.Message}");
+                ArchipelagoManager.PostLogMessage("Trap: Hazardous Weather (failed to schedule)");
             }
         }
 
-        private int GetCurrentCycleDay()
-        {
-            return _gameCycleService.CycleDay;
-        }
-
         /// <summary>
-        /// Called each tick by ArchipelagoTicker. Handles two things:
-        /// 1. Pending scheduled weather: fires when the notice period expires
-        /// 2. Queued weather traps: fires next queued trap when weather ends
+        /// Called each tick by ArchipelagoTicker. Dequeues the next weather trap
+        /// once the current hazardous cycle ends and no new one is pending.
         /// </summary>
         public void ProcessWeatherQueue()
         {
-            // Check if a scheduled weather's notice period has expired
-            if (_pendingWeatherType != null)
-            {
-                int currentDay = GetCurrentCycleDay();
-                if (currentDay >= _pendingWeatherStartDay)
-                {
-                    var type = _pendingWeatherType;
-                    _pendingWeatherType = null;
-                    _pendingWeatherStartDay = -1;
-                    Debug.Log($"[Archipelago] Weather notice period expired on day {currentDay} — starting {type}");
-                    ForceStartHazardousWeather(type);
-                }
-                return; // Don't dequeue while a scheduled weather is pending
-            }
-
-            // Process queued weather traps when no weather is active
             if (_weatherTrapQueue.Count == 0) return;
-            if (IsHazardousWeatherActive()) return;
 
-            var next = _weatherTrapQueue.Dequeue();
-            Debug.Log($"[Archipelago] Dequeuing weather trap: {next} (remaining: {_weatherTrapQueue.Count})");
-            ScheduleHazardousWeather(next);
-        }
+            bool hazardousActive = _weatherService.IsHazardousWeather;
+            bool hazardousPending = _hazardousWeatherService.HazardousWeatherDuration > 0 && !hazardousActive;
+            if (hazardousActive || hazardousPending) return;
 
-        private bool IsHazardousWeatherActive()
-        {
-            return _weatherService.IsHazardousWeather;
+            _weatherTrapQueue.Dequeue();
+            Debug.Log($"[Archipelago] Dequeuing weather trap (remaining: {_weatherTrapQueue.Count})");
+            ScheduleHazardousWeather();
         }
 
         private void TriggerHungryBeavers()
