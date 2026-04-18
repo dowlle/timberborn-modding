@@ -7,6 +7,7 @@ using Timberborn.BonusSystem;
 using Timberborn.EntitySystem;
 using Timberborn.GameCycleSystem;
 using Timberborn.HazardousWeatherSystem;
+using Timberborn.Population;
 using Timberborn.SingletonSystem;
 using Timberborn.WeatherSystem;
 using UnityEngine;
@@ -17,7 +18,7 @@ namespace ArchipelagoIntegration
     /// Handles non-blueprint AP item effects: traps, filler (resource injection),
     /// and boosts (permanent stat bonuses).
     /// </summary>
-    public class ApEffectHandler : ILoadableSingleton, IUnloadableSingleton
+    public class ApEffectHandler : ILoadableSingleton, IPostLoadableSingleton, IUnloadableSingleton
     {
         internal static ApEffectHandler Instance { get; private set; }
 
@@ -27,6 +28,7 @@ namespace ArchipelagoIntegration
         private readonly EntityComponentRegistry _entityComponentRegistry;
         private readonly EntityRegistry _entityRegistry;
         private readonly BonusTypeSpecService _bonusTypeSpecService;
+        private readonly PopulationService _populationService;
         private readonly ArchipelagoSaveData _saveData;
 
         // BaseComponent.GetComponent<T>() open generic method definition — used to
@@ -96,6 +98,7 @@ namespace ArchipelagoIntegration
             EntityComponentRegistry entityComponentRegistry,
             EntityRegistry entityRegistry,
             BonusTypeSpecService bonusTypeSpecService,
+            PopulationService populationService,
             ArchipelagoSaveData saveData)
         {
             _hazardousWeatherService = hazardousWeatherService;
@@ -104,6 +107,7 @@ namespace ArchipelagoIntegration
             _entityComponentRegistry = entityComponentRegistry;
             _entityRegistry = entityRegistry;
             _bonusTypeSpecService = bonusTypeSpecService;
+            _populationService = populationService;
             _saveData = saveData;
         }
 
@@ -179,14 +183,63 @@ namespace ArchipelagoIntegration
             Instance = this;
             DiscoverBonusIds();
             RunReflectionDryRuns();
+            // NOTE: Boost re-application deferred to PostLoad — at Load() time on a
+            // save-reload, entities from the save haven't been instantiated yet, so
+            // FindEntityComponents returns 0 and the re-apply is a no-op. That
+            // happened in the 2026-04-18 playtest: beaver MovementSpeed reverted
+            // from 1.25 to 1.05 because re-apply found 0 BonusManagers.
+        }
 
-            // Re-apply persisted boosts to all existing entities
+        /// <summary>
+        /// Runs after every ILoadableSingleton.Load() in the scene — by this point
+        /// the EntityRegistry is populated with all restored entities, so we can
+        /// re-apply persisted boosts and log the real entity counts.
+        /// </summary>
+        public void PostLoad()
+        {
+            LogPostLoadState();
+
+            // Re-apply persisted boosts now that entities actually exist.
             if (_saveData.ActiveBoosts.Count > 0)
             {
-                Debug.Log($"[Archipelago] Re-applying {_saveData.ActiveBoosts.Count} active boosts");
+                Debug.Log($"[Archipelago] PostLoad: re-applying {_saveData.ActiveBoosts.Count} active boost(s)");
                 foreach (var boostName in _saveData.ActiveBoosts)
                     ApplyBoostToAllEntities(boostName);
             }
+        }
+
+        /// <summary>
+        /// Diagnostic snapshot of the entity population at PostLoad. Used to verify
+        /// that entity counts match what the game displays — especially important
+        /// for large saves (e.g., 150 beavers + 100 bots test saves) and for
+        /// sanity-checking the BonusManager / Inventory / NeedManager lookup paths.
+        /// </summary>
+        private void LogPostLoadState()
+        {
+            int totalEntities = 0;
+            try { foreach (var _ in _entityRegistry.Entities) totalEntities++; }
+            catch (Exception ex) { Debug.LogWarning($"[Archipelago] PostLoad entity count failed: {ex.Message}"); }
+
+            int bonusMgrs = _bonusManagerType != null ? FindEntityComponents(_bonusManagerType).Count : -1;
+            int inventories = _inventoryType != null ? FindEntityComponents(_inventoryType).Count : -1;
+            int needMgrs = _needManagerType != null ? FindEntityComponents(_needManagerType).Count : -1;
+
+            int beavers = -1, adults = -1, bots = -1;
+            try
+            {
+                var pop = _populationService.GlobalPopulationData;
+                beavers = pop.NumberOfBeavers;
+                adults = pop.NumberOfAdults;
+                bots = pop.NumberOfBots;
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[Archipelago] PopulationService read failed: {ex.Message}");
+            }
+
+            Debug.Log($"[Archipelago] PostLoad state — " +
+                      $"entities={totalEntities}, BonusManagers={bonusMgrs}, Inventories={inventories}, " +
+                      $"NeedManagers={needMgrs}, beavers={beavers} (adults={adults}), bots={bots}");
         }
 
         /// <summary>
