@@ -40,9 +40,18 @@ namespace ArchipelagoIntegration
         private bool _baseComponentSearched;
 
         // Weather trap queue: additional Hazardous Weather traps that arrive
-        // while a hazardous cycle is already active or pending. Drained by
-        // ProcessWeatherQueue() once the current cycle ends.
+        // while a hazardous cycle is already active or our previous trap is
+        // awaiting transition. Drained by ProcessWeatherQueue() once the
+        // current cycle ends (or our scheduled trap has fired).
         private readonly Queue<string> _weatherTrapQueue = new();
+
+        // True from the moment we schedule a trap until its hazardous cycle
+        // actually starts. Distinct from the game's own HazardousWeatherDuration
+        // pre-scheduling — on late-game saves like Crator, the game already has
+        // a natural hazardous cycle lined up during every temperate period, so
+        // we can't rely on HazardousWeatherDuration > 0 to detect "our" pending
+        // trap. Cleared in ProcessWeatherQueue when IsHazardousWeather flips true.
+        private bool _trapScheduledAwaitingTransition;
 
         // In-game days of warning the player gets before a queued hazardous
         // cycle starts. Used to shorten the current temperate cycle so the
@@ -394,9 +403,13 @@ namespace ArchipelagoIntegration
         private void TriggerHazardousWeather()
         {
             bool hazardousActive = _weatherService.IsHazardousWeather;
-            bool hazardousPending = _hazardousWeatherService.HazardousWeatherDuration > 0 && !hazardousActive;
 
-            if (hazardousActive || hazardousPending)
+            // Defer only when weather is currently hazardous or we've already
+            // scheduled a trap that hasn't fired yet. We intentionally do NOT
+            // check the game's HazardousWeatherDuration — on late-game saves
+            // the game always has a next-hazardous lined up during temperate,
+            // which would otherwise make every trap queue forever.
+            if (hazardousActive || _trapScheduledAwaitingTransition)
             {
                 int trapMode = 0;
                 if (ArchipelagoManager.SlotData != null
@@ -405,16 +418,17 @@ namespace ArchipelagoIntegration
                     int.TryParse(modeObj?.ToString() ?? "0", out trapMode);
                 }
 
+                string reason = hazardousActive ? "weather currently active" : "trap already scheduled, awaiting transition";
                 if (trapMode == 1)
                 {
-                    Debug.Log("[Archipelago] Hazardous Weather skipped (already active/pending, trap_mode=skip)");
-                    ArchipelagoManager.PostLogMessage("Trap skipped: Hazardous Weather (weather already active)");
+                    Debug.Log($"[Archipelago] Hazardous Weather skipped ({reason}, trap_mode=skip)");
+                    ArchipelagoManager.PostLogMessage($"Trap skipped: Hazardous Weather ({reason})");
                     return;
                 }
 
                 _weatherTrapQueue.Enqueue("HazardousWeather");
-                Debug.Log($"[Archipelago] Hazardous Weather queued (queue size: {_weatherTrapQueue.Count})");
-                ArchipelagoManager.PostLogMessage("Trap queued: Hazardous Weather (weather already active)");
+                Debug.Log($"[Archipelago] Hazardous Weather queued ({reason}, queue size: {_weatherTrapQueue.Count})");
+                ArchipelagoManager.PostLogMessage($"Trap queued: Hazardous Weather ({reason})");
                 return;
             }
 
@@ -453,6 +467,11 @@ namespace ArchipelagoIntegration
                 }
                 Debug.Log($"[Archipelago] HazardousWeatherService queued for next cycle — " +
                           $"HazardousWeatherDuration={_hazardousWeatherService.HazardousWeatherDuration}");
+
+                // Mark that we've scheduled a trap. Prevents subsequent traps from
+                // double-scheduling and blocks queue drain until the hazardous cycle
+                // actually starts (when IsHazardousWeather flips true).
+                _trapScheduledAwaitingTransition = true;
 
                 // Shorten the current temperate cycle so transition happens soon, but
                 // only if natural duration is LONGER than our notice period. If it's
@@ -510,16 +529,26 @@ namespace ArchipelagoIntegration
         }
 
         /// <summary>
-        /// Called each tick by ArchipelagoTicker. Dequeues the next weather trap
-        /// once the current hazardous cycle ends and no new one is pending.
+        /// Called each tick by ArchipelagoTicker. Handles two state transitions:
+        /// 1. Our scheduled trap transitions from temperate -> hazardous → clear
+        ///    the _trapScheduledAwaitingTransition flag so queued traps can drain.
+        /// 2. If the queue has entries AND weather is temperate AND no trap
+        ///    is currently awaiting transition → dequeue and schedule.
         /// </summary>
         public void ProcessWeatherQueue()
         {
-            if (_weatherTrapQueue.Count == 0) return;
-
             bool hazardousActive = _weatherService.IsHazardousWeather;
-            bool hazardousPending = _hazardousWeatherService.HazardousWeatherDuration > 0 && !hazardousActive;
-            if (hazardousActive || hazardousPending) return;
+
+            // Clear our "awaiting transition" flag once the scheduled hazardous
+            // actually fires. This re-enables queue draining for the next trap.
+            if (_trapScheduledAwaitingTransition && hazardousActive)
+            {
+                _trapScheduledAwaitingTransition = false;
+                Debug.Log("[Archipelago] Scheduled trap hazardous cycle is now active; queue drain re-enabled.");
+            }
+
+            if (_weatherTrapQueue.Count == 0) return;
+            if (hazardousActive || _trapScheduledAwaitingTransition) return;
 
             _weatherTrapQueue.Dequeue();
             Debug.Log($"[Archipelago] Dequeuing weather trap (remaining: {_weatherTrapQueue.Count})");
