@@ -33,9 +33,14 @@ namespace ArchipelagoIntegration
         private int _pendingWeatherStartDay = -1;
         private const int WEATHER_NOTICE_DAYS = 3;
 
-        // GoodId type resolved via reflection (from Timberborn.Goods)
-        private Type _goodIdType;
-        private bool _goodIdTypeSearched;
+        // Filler injection pipeline: GoodAmount struct + Inventory.GiveIgnoringCapacity
+        // resolved via reflection. Inventory extends BaseComponent (not UnityEngine.Object),
+        // so entities must be located via EntityComponentRegistry, not FindObjectsByType.
+        private Type _goodAmountType;
+        private Type _inventoryType;
+        private MethodInfo _giveIgnoringCapacityMethod;
+        private MethodInfo _givesMethod;
+        private bool _inventorySystemSearched;
 
         // BonusManager resolved via reflection
         private Type _bonusManagerType;
@@ -471,58 +476,113 @@ namespace ArchipelagoIntegration
 
         private void InjectGoods(string goodIdStr, int amount)
         {
-            // Resolve GoodAmount type — GiveIgnoringCapacity takes a single GoodAmount param
-            if (!_goodIdTypeSearched)
-            {
-                _goodIdTypeSearched = true;
-                _goodIdType = FindType("Timberborn.Goods.GoodAmount");
-            }
+            EnsureInventorySystemResolved();
 
-            if (_goodIdType == null)
+            if (_goodAmountType == null)
             {
                 Debug.LogWarning("[Archipelago] Could not find GoodAmount type for goods injection");
                 return;
             }
-
-            // GoodAmount(string goodId, int amount)
-            var goodAmount = Activator.CreateInstance(_goodIdType, goodIdStr, amount);
-
-            var inventoryType = FindType("Timberborn.InventorySystem.Inventory");
-            if (inventoryType == null)
+            if (_inventoryType == null || _giveIgnoringCapacityMethod == null)
             {
-                Debug.LogWarning("[Archipelago] Could not find Inventory type");
+                Debug.LogWarning("[Archipelago] Could not resolve Inventory.GiveIgnoringCapacity for goods injection");
                 return;
             }
 
-            var inventories = UnityEngine.Object.FindObjectsByType(
-                inventoryType, FindObjectsSortMode.None);
+            // GoodAmount(string goodId, int amount) — verified ctor signature
+            var goodAmount = Activator.CreateInstance(_goodAmountType, goodIdStr, amount);
 
-            if (inventories == null || inventories.Length == 0)
+            // Inventory extends BaseComponent, so UnityEngine.Object.FindObjectsByType
+            // returns empty. Must use EntityComponentRegistry.GetEnabled<T>() via
+            // MakeGenericMethod at runtime — same pattern as ApplyBonusToAllEntities.
+            var getEnabledMethod = _entityComponentRegistry.GetType()
+                .GetMethod("GetEnabled")
+                ?.MakeGenericMethod(_inventoryType);
+
+            if (getEnabledMethod == null)
             {
-                Debug.LogWarning("[Archipelago] No Inventory instances found");
+                Debug.LogWarning("[Archipelago] Could not create GetEnabled<Inventory> method");
                 return;
             }
+
+            var inventories = new List<object>();
+            var enumerable = getEnabledMethod.Invoke(_entityComponentRegistry, null)
+                             as System.Collections.IEnumerable;
+            if (enumerable != null)
+                foreach (var inv in enumerable)
+                    inventories.Add(inv);
+
+            if (inventories.Count == 0)
+            {
+                Debug.LogWarning($"[Archipelago] No Inventory instances found — cannot inject {amount} {goodIdStr}");
+                return;
+            }
+
+            // Prefer inventories that explicitly accept this good (stockpiles over
+            // beaver-carry inventories). Fall back to any inventory if nothing matches.
+            var accepting = new List<object>();
+            if (_givesMethod != null)
+            {
+                foreach (var inv in inventories)
+                {
+                    try
+                    {
+                        if (_givesMethod.Invoke(inv, new object[] { goodIdStr }) is bool gives && gives)
+                            accepting.Add(inv);
+                    }
+                    catch { /* skip on reflection issue */ }
+                }
+            }
+            var candidates = accepting.Count > 0 ? accepting : inventories;
 
             bool injected = false;
-            foreach (var inventory in inventories)
+            foreach (var inventory in candidates)
             {
-                var giveMethod = inventory.GetType().GetMethod("GiveIgnoringCapacity");
-                if (giveMethod == null) continue;
-
                 try
                 {
-                    giveMethod.Invoke(inventory, new[] { goodAmount });
+                    _giveIgnoringCapacityMethod.Invoke(inventory, new[] { goodAmount });
                     injected = true;
+                    Debug.Log($"[Archipelago] Injected {amount} {goodIdStr} into an inventory " +
+                              $"({accepting.Count} accepting of {inventories.Count} total)");
                     break; // GiveIgnoringCapacity handles the full amount
                 }
-                catch
+                catch (Exception ex)
                 {
-                    // This inventory can't accept this good, try next
+                    // This inventory rejected the good — try next
+                    Debug.Log($"[Archipelago] Inventory rejected {goodIdStr}: {ex.InnerException?.Message ?? ex.Message}");
                 }
             }
 
             if (!injected)
-                Debug.LogWarning($"[Archipelago] Could not inject {amount} {goodIdStr} — no accepting inventory found");
+                Debug.LogWarning($"[Archipelago] Could not inject {amount} {goodIdStr} — no accepting inventory found " +
+                                 $"(checked {candidates.Count} candidate(s))");
+        }
+
+        private void EnsureInventorySystemResolved()
+        {
+            if (_inventorySystemSearched) return;
+            _inventorySystemSearched = true;
+
+            _goodAmountType = FindType("Timberborn.Goods.GoodAmount");
+            _inventoryType = FindType("Timberborn.InventorySystem.Inventory");
+
+            if (_inventoryType != null && _goodAmountType != null)
+            {
+                // GiveIgnoringCapacity(GoodAmount good) — verified single-param signature
+                _giveIgnoringCapacityMethod = _inventoryType.GetMethod(
+                    "GiveIgnoringCapacity", new[] { _goodAmountType });
+            }
+
+            if (_inventoryType != null)
+            {
+                // Gives(string goodId) — filters out inventories that don't accept a good
+                _givesMethod = _inventoryType.GetMethod("Gives", new[] { typeof(string) });
+            }
+
+            Debug.Log($"[Archipelago] InventorySystem resolved: Inventory={_inventoryType != null}, " +
+                      $"GoodAmount={_goodAmountType != null}, " +
+                      $"GiveIgnoringCapacity={_giveIgnoringCapacityMethod != null}, " +
+                      $"Gives={_givesMethod != null}");
         }
 
         // =================================================================
