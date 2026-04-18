@@ -153,6 +153,15 @@ namespace ArchipelagoIntegration
             // Always subscribe to connection events — even on fresh saves with no AP data
             ArchipelagoManager.OnConnectionChanged += OnConnectionChanged;
 
+            // Reset the per-process connection block flag on every save load.
+            // ConnectionBlocked is a static on ArchipelagoManager; a faction mismatch
+            // from a prior connection attempt would otherwise persist for the whole
+            // Timberborn process and prevent all future connects until full exe restart.
+            // Clearing here means reloading any save gives a fresh chance to connect;
+            // if the server still reports the wrong faction, the block flips back on.
+            _connectionBlocked = false;
+            ArchipelagoManager.ConnectionBlocked = false;
+
             // Set faction early so GetFaction() works before SlotData arrives
             try
             {
