@@ -28,6 +28,11 @@ namespace ArchipelagoIntegration
             // Effect handling (filler, traps, boosts)
             Bind<ApEffectHandler>().AsSingleton();
 
+            // Cycle observability — logs CycleStarted/Ended/DayStarted with
+            // weather + history snapshots. Critical for catching post-trap
+            // state regressions (e.g., the post-v0.0.4 water-spawn issue).
+            Bind<CycleEventObserver>().AsSingleton();
+
             // AP Shop (tiered location check panel)
             Bind<ApShopPanel>().AsSingleton();
             Bind<ApShopTool>().AsSingleton();
