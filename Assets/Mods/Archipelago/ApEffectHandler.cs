@@ -31,6 +31,7 @@ namespace ArchipelagoIntegration
         private readonly BonusTypeSpecService _bonusTypeSpecService;
         private readonly PopulationService _populationService;
         private readonly ArchipelagoSaveData _saveData;
+        private readonly EventBus _eventBus;
 
         // BaseComponent.GetComponent<T>() open generic method definition — used to
         // look up BaseComponent-derived types (BonusManager, Inventory, …) per-entity.
@@ -45,12 +46,18 @@ namespace ArchipelagoIntegration
         // current cycle ends (or our scheduled trap has fired).
         private readonly Queue<string> _weatherTrapQueue = new();
 
-        // True from the moment we schedule a trap until its hazardous cycle
-        // actually starts. With the v0.0.5 direct-trigger approach this flips
-        // false on the next ProcessWeatherQueue tick (since StartHazardousWeather
-        // is synchronous and IsHazardousWeather is true immediately after), but
-        // we keep the flag so concurrent traps within a single frame still
-        // serialize through the queue rather than double-triggering.
+        // True from the moment we schedule a trap (shorten current temperate)
+        // until the next CycleStarted event fires (the cycle AFTER the trap-
+        // induced hazardous resolves). While set, additional traps queue rather
+        // than fire — covers both the "awaiting natural transition to hazardous"
+        // window and the "hazardous in progress, awaiting cycle wrap" window in
+        // a single flag.
+        //
+        // Cleared in OnCycleStarted, which is the post-trap cycle-cleanup hook
+        // where we also re-randomize TemperateWeatherDuration (via SetForCycle)
+        // to fix the post-v0.0.4 water-spawn regression — the hypothesis being
+        // that the mutated backing field leaves downstream water-source state
+        // in a stale configuration during the temperate cycle that follows.
         private bool _trapScheduledAwaitingTransition;
 
         // Filler injection pipeline: GoodAmount struct + Inventory.GiveIgnoringCapacity
@@ -107,7 +114,8 @@ namespace ArchipelagoIntegration
             EntityRegistry entityRegistry,
             BonusTypeSpecService bonusTypeSpecService,
             PopulationService populationService,
-            ArchipelagoSaveData saveData)
+            ArchipelagoSaveData saveData,
+            EventBus eventBus)
         {
             _hazardousWeatherService = hazardousWeatherService;
             _weatherService = weatherService;
@@ -118,6 +126,7 @@ namespace ArchipelagoIntegration
             _bonusTypeSpecService = bonusTypeSpecService;
             _populationService = populationService;
             _saveData = saveData;
+            _eventBus = eventBus;
         }
 
         /// <summary>
@@ -192,6 +201,7 @@ namespace ArchipelagoIntegration
             Instance = this;
             DiscoverBonusIds();
             RunReflectionDryRuns();
+            _eventBus.Register(this);
             // NOTE: Boost re-application deferred to PostLoad — at Load() time on a
             // save-reload, entities from the save haven't been instantiated yet, so
             // FindEntityComponents returns 0 and the re-apply is a no-op. That
@@ -334,6 +344,9 @@ namespace ArchipelagoIntegration
 
         public void Unload()
         {
+            try { _eventBus.Unregister(this); }
+            catch { /* unregister may throw if never registered or already torn down */ }
+
             if (Instance == this)
                 Instance = null;
         }
@@ -387,21 +400,29 @@ namespace ArchipelagoIntegration
         }
 
         /// <summary>
-        /// Entry point for the consolidated Hazardous Weather trap. Calls the
-        /// game's own StartHazardousWeather() directly — the same method the
-        /// game invokes at natural temperate→hazardous cycle transitions. The
-        /// drought-vs-badtide pick is whatever the game's HazardousWeatherRandomizer
-        /// pre-rolled for this cycle via SetForCycle.
+        /// Entry point for the consolidated Hazardous Weather trap. Shortens the
+        /// current temperate cycle so the game's own state machine fires hazardous
+        /// at the natural transition (no direct StartHazardousWeather call). The
+        /// drought-vs-badtide pick is whatever HazardousWeatherRandomizer pre-rolled
+        /// for this cycle, exactly as in an unmodded game.
         ///
-        /// History: v0.0.2 forced specific weather types mid-cycle which only
-        /// updated history state, not the visual widget. v0.0.3 / v0.0.4 used
-        /// temperate-shortening (writing TemperateWeatherDuration's backing field
-        /// to currentDay + 3) which fired the trap correctly with a 3-day notice
-        /// but appeared to break water spawning in the *following* temperate
-        /// cycle (drought-testing finding 2026-04-18, post-v0.0.4 ship). v0.0.5
-        /// goes through StartHazardousWeather() directly so we never touch the
-        /// temperate duration value — the cycle state machine stays exactly as
-        /// the game arranged it.
+        /// Design history:
+        ///   v0.0.2  — forced specific weather types mid-cycle; only updated history
+        ///             state, not the visual widget. Bug.
+        ///   v0.0.3/4 — temperate-shortening via &lt;TemperateWeatherDuration&gt;k__BackingField
+        ///             reflection write; fired correctly with 3-day notice but
+        ///             appeared to break water spawning in the *following* temperate
+        ///             cycle (drought-testing finding 2026-04-18, post-v0.0.4 ship).
+        ///   v0.0.5 first attempt — direct StartHazardousWeather() call mid-temperate.
+        ///             Worked but fired hazardous IMMEDIATELY (no countdown UI), wrong
+        ///             player UX. Rejected during Session J runtime verification 2026-04-29.
+        ///   v0.0.5 final (this code) — back to temperate-shortening but with an
+        ///             OnCycleStarted hook on the post-trap cycle that re-randomizes
+        ///             TemperateWeatherDuration via SetForCycle. Hypothesis: the
+        ///             water-spawn regression was caused by the shortened backing-field
+        ///             value persisting into the post-trap cycle's water-source
+        ///             accounting. Re-randomizing on the next CycleStarted event
+        ///             should restore healthy water spawn.
         /// </summary>
         private void TriggerHazardousWeather()
         {
@@ -439,129 +460,202 @@ namespace ArchipelagoIntegration
         }
 
         /// <summary>
-        /// Trigger the game's native StartHazardousWeather() directly — the same
-        /// method the game itself invokes at natural temperate→hazardous transitions.
-        /// Posts the hazardous-started event that the visual weather widget,
-        /// HazardousWeatherUI, and HazardousWeatherHistory all listen for.
+        /// Schedule a Hazardous Weather trap by SHORTENING the current temperate
+        /// cycle. The game's own state machine then fires hazardous at the natural
+        /// temperate-end transition — drought-vs-badtide pick is whatever
+        /// HazardousWeatherRandomizer pre-rolled for this cycle, full visual UI
+        /// (countdown notice + native "Drought/Badtide approaching" notification)
+        /// fires through the game's normal path, no mod intervention at the
+        /// transition itself.
         ///
-        /// Drought vs badtide is whatever HazardousWeatherRandomizer pre-rolled
-        /// at cycle start (populating CurrentCycleHazardousWeather). If for some
-        /// reason the pick hasn't been made yet, we call SetForCycle defensively
-        /// to force a roll — idempotent for the current cycle index.
+        /// Implementation: write &lt;TemperateWeatherDuration&gt;k__BackingField
+        /// directly via reflection to currentDay + WEATHER_NOTICE_DAYS. The
+        /// publicizer exposes the backing field but not a public setter, so the
+        /// reflection write is required (same pattern as &lt;AllNeeds&gt;k__BackingField
+        /// from NeedSystem). If the existing TemperateWeatherDuration is already
+        /// shorter than currentDay + WEATHER_NOTICE_DAYS, we leave it alone — the
+        /// trap effectively queues for the natural transition that's already
+        /// imminent.
         ///
-        /// Replaces the v0.0.3 / v0.0.4 temperate-shortening mechanism (writing
-        /// &lt;TemperateWeatherDuration&gt;k__BackingField to currentDay + 3) which
-        /// triggered the trap correctly but appeared to break water spawning in
-        /// the *following* temperate cycle. By going through StartHazardousWeather
-        /// directly we never touch the temperate duration value — the cycle state
-        /// machine stays exactly as the game arranged it.
-        ///
-        /// Trade-off: no 3-day countdown UI; the hazardous starts immediately when
-        /// the trap fires. The "Drought in N days" warning the player normally sees
-        /// only appears when the GAME schedules the next hazardous via its own
-        /// SetForCycle pre-roll, not when an AP trap interrupts the cycle.
+        /// The post-v0.0.4 water-spawn regression hypothesis (the reason we
+        /// abandoned v0.0.3 temperate-shortening originally) is mitigated by the
+        /// OnCycleStarted hook that runs at the START of the post-trap cycle
+        /// (after hazardous resolves, when the next temperate begins) — it calls
+        /// _temperateWeatherDurationService.SetForCycle(cycle) to re-randomize
+        /// TemperateWeatherDuration so any downstream water-source accounting
+        /// derived from the (mutated, now-stale) backing-field value gets a
+        /// fresh, game-validated duration.
         /// </summary>
+        private const int WEATHER_NOTICE_DAYS = 3;
+
         private void ScheduleHazardousWeather()
         {
             try
             {
-                // Mark that we've scheduled a trap. With direct triggering this
-                // flag clears on the next ProcessWeatherQueue tick (IsHazardousWeather
-                // is already true after this method returns), but it still serializes
-                // concurrent traps that arrive within a single frame.
-                _trapScheduledAwaitingTransition = true;
-
-                // Snapshot pre-state for diagnostic logging — when Stef runtime-verifies
-                // this, the Player.log entries will show whether the hazardous pick
-                // was already populated, what type it was, and whether
-                // StartHazardousWeather flipped IsHazardous as expected.
-                bool wasHazardous = _weatherService.IsHazardousWeather;
                 int cycle = _gameCycleService.Cycle;
                 int cycleDay = _gameCycleService.CycleDay;
+                int oldTempDuration = _temperateWeatherDurationService.TemperateWeatherDuration;
+                int newTempDuration = cycleDay + WEATHER_NOTICE_DAYS;
                 int hazStartDay = _weatherService.HazardousWeatherStartCycleDay;
                 int hazDuration = _hazardousWeatherService.HazardousWeatherDuration;
-                int temperateDuration = _temperateWeatherDurationService.TemperateWeatherDuration;
                 var hazType = _hazardousWeatherService.CurrentCycleHazardousWeather;
                 string typeName = hazType?.GetType().Name ?? "(null)";
 
-                Debug.Log($"[Archipelago] Trap: triggering Hazardous Weather via native event. " +
-                          $"Pre-state: cycle={cycle}, day={cycleDay}, IsHazardous={wasHazardous}, " +
+                Debug.Log($"[Archipelago] Trap: scheduling Hazardous Weather via temperate-shortening. " +
+                          $"Pre-state: cycle={cycle}, day={cycleDay}, IsHazardous={_weatherService.IsHazardousWeather}, " +
                           $"Type={typeName}, HazDuration={hazDuration}, " +
-                          $"TempDuration={temperateDuration}, HazStartDay={hazStartDay}");
+                          $"TempDuration={oldTempDuration}, HazStartDay={hazStartDay}");
 
-                // Defensive: if the game hasn't pre-rolled a hazardous pick (e.g.,
-                // very early in a cycle before SetForCycle has populated everything),
-                // force a roll. SetForCycle is idempotent for a given cycle index —
-                // it asks HazardousWeatherRandomizer to pick drought vs badtide and
-                // sets HazardousWeatherDuration. The param is the cycle INDEX, not
-                // a duration; matches GameCycleService.Cycle and the same-named
-                // method on TemperateWeatherDurationService.
-                if (hazType == null)
+                // Mark trap as in-flight. Cleared in OnCycleStarted (the post-trap
+                // cycle) along with the SetForCycle reset that fixes the water-
+                // spawn regression. While set, additional traps queue.
+                _trapScheduledAwaitingTransition = true;
+
+                if (newTempDuration < oldTempDuration)
                 {
-                    _hazardousWeatherService.SetForCycle(cycle);
-                    var rolled = _hazardousWeatherService.CurrentCycleHazardousWeather;
-                    Debug.Log($"[Archipelago] CurrentCycleHazardousWeather was null; " +
-                              $"called SetForCycle({cycle}). Result: " +
-                              $"Type={rolled?.GetType().Name ?? "(still null!)"}, " +
-                              $"HazDuration={_hazardousWeatherService.HazardousWeatherDuration}");
+                    // Reflect-write the backing field. The publicizer didn't expose
+                    // a public setter (despite the inspector reporting W=True for
+                    // the property), so we write the underlying compiler-generated
+                    // backing field directly. Same pattern as <AllNeeds>k__BackingField.
+                    var serviceType = _temperateWeatherDurationService.GetType();
+                    var backingField = serviceType.GetField(
+                        "<TemperateWeatherDuration>k__BackingField",
+                        BindingFlags.Instance | BindingFlags.NonPublic);
+
+                    if (backingField != null)
+                    {
+                        backingField.SetValue(_temperateWeatherDurationService, newTempDuration);
+                        Debug.Log($"[Archipelago] Shortened temperate: TemperateWeatherDuration " +
+                                  $"{oldTempDuration} -> {newTempDuration} (current day {cycleDay}, " +
+                                  $"notice {WEATHER_NOTICE_DAYS} days)");
+                    }
+                    else
+                    {
+                        Debug.LogWarning("[Archipelago] <TemperateWeatherDuration>k__BackingField not found via reflection — " +
+                                         "trap will fire at the natural transition without shortening.");
+                    }
+
+                    // Also shorten GameCycleService._cycleDurationInDays. Discovered
+                    // 2026-04-29 during Session J: the game caches total cycle length
+                    // at cycle start as the sum of all ICycleDuration providers
+                    // (TempDur + HazDur = 21 normally), and the cycle-end check in
+                    // OnDaytimeStart compares CycleDay to this cached value. Mutating
+                    // TempDur mid-cycle does not propagate to _cycleDurationInDays,
+                    // so without this write the cycle still runs its full original
+                    // length — hazardous extends from our shortened-temperate end
+                    // all the way to the original 21-day cycle boundary, instead
+                    // of running its intended HazDur=7 days.
+                    var gameCycleType = _gameCycleService.GetType();
+                    var cycleDurationField = gameCycleType.GetField(
+                        "_cycleDurationInDays",
+                        BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                    if (cycleDurationField != null)
+                    {
+                        int oldCycleDur = (int)cycleDurationField.GetValue(_gameCycleService);
+                        int newCycleDur = newTempDuration + hazDuration;
+                        cycleDurationField.SetValue(_gameCycleService, newCycleDur);
+                        Debug.Log($"[Archipelago] Shortened cycle duration: GameCycleService._cycleDurationInDays " +
+                                  $"{oldCycleDur} -> {newCycleDur} (= newTempDur {newTempDuration} + HazDur {hazDuration})");
+                    }
+                    else
+                    {
+                        Debug.LogWarning("[Archipelago] GameCycleService._cycleDurationInDays not found via reflection — " +
+                                         "cycle will still run its original length, hazardous will extend.");
+                    }
+                }
+                else
+                {
+                    Debug.Log($"[Archipelago] TemperateWeatherDuration ({oldTempDuration}) is already <= " +
+                              $"currentDay+{WEATHER_NOTICE_DAYS} ({newTempDuration}); leaving as-is. " +
+                              $"Natural transition is already imminent.");
                 }
 
-                // The actual trigger — same call the game makes at natural cycle
-                // transition. Posts the hazardous-started event; visual widget
-                // transitions; HazardousWeatherHistory increments.
-                _hazardousWeatherService.StartHazardousWeather();
+                // Grep-friendly summary line. Note: HAZARDOUS_WEATHER queued (not
+                // "fired") because the actual hazardous start happens later when
+                // the natural game transition runs. The companion [Archipelago/Cycle]
+                // log lines from CycleEventObserver will mark the actual transition.
+                Debug.Log($"[Archipelago/Trap] HAZARDOUS_WEATHER queued: " +
+                          $"cycle={cycle}, day={cycleDay}, " +
+                          $"newTempDur={newTempDuration}, " +
+                          $"preRolledType={typeName}, " +
+                          $"awaiting natural transition.");
 
-                // Post-state snapshot so Player.log shows whether the call took.
-                Debug.Log($"[Archipelago] After StartHazardousWeather: " +
-                          $"IsHazardous={_weatherService.IsHazardousWeather}, " +
-                          $"Type={_hazardousWeatherService.CurrentCycleHazardousWeather?.GetType().Name ?? "(null)"}, " +
-                          $"HazDuration={_hazardousWeatherService.HazardousWeatherDuration}, " +
-                          $"cycleDay={_gameCycleService.CycleDay}");
-
-                // One-line summary for grep-friendly observability. The
-                // [Archipelago/Trap] prefix (vs the bare [Archipelago] above) lets
-                // `grep "Archipelago/Trap"` return exactly one line per trap fire
-                // across all trap types — useful when scanning long Player.log
-                // files for trap activity.
-                Debug.Log($"[Archipelago/Trap] HAZARDOUS_WEATHER fired: " +
-                          $"type={_hazardousWeatherService.CurrentCycleHazardousWeather?.GetType().Name ?? "(null)"}, " +
-                          $"duration={_hazardousWeatherService.HazardousWeatherDuration}, " +
-                          $"cycle={_gameCycleService.Cycle}, day={_gameCycleService.CycleDay}");
-
-                ArchipelagoManager.PostLogMessage("Trap activated: Hazardous Weather!");
+                ArchipelagoManager.PostLogMessage($"Trap incoming: Hazardous Weather in {WEATHER_NOTICE_DAYS} days!");
             }
             catch (Exception ex)
             {
-                Debug.LogWarning($"[Archipelago] Failed to trigger Hazardous Weather: {ex.Message}");
-                ArchipelagoManager.PostLogMessage("Trap: Hazardous Weather (failed to trigger)");
+                Debug.LogWarning($"[Archipelago] Failed to schedule Hazardous Weather: {ex.Message}");
+                ArchipelagoManager.PostLogMessage("Trap: Hazardous Weather (failed to schedule)");
+                // Don't leave the flag set if we failed to actually shorten anything.
+                _trapScheduledAwaitingTransition = false;
             }
         }
 
         /// <summary>
-        /// Called each tick by ArchipelagoTicker. Handles two state transitions:
-        /// 1. Our scheduled trap transitions from temperate -> hazardous → clear
-        ///    the _trapScheduledAwaitingTransition flag so queued traps can drain.
-        /// 2. If the queue has entries AND weather is temperate AND no trap
-        ///    is currently awaiting transition → dequeue and schedule.
+        /// Called each tick by ArchipelagoTicker. Drains the weather trap queue
+        /// when the in-flight trap has completed — i.e., the post-trap cycle has
+        /// started (flag cleared by OnCycleStarted) and no hazardous is currently
+        /// active.
+        ///
+        /// Note: this no longer flips _trapScheduledAwaitingTransition itself.
+        /// Cleanup happens in OnCycleStarted, which is the post-trap cycle hook
+        /// where TemperateWeatherDuration also gets re-randomized via SetForCycle.
         /// </summary>
         public void ProcessWeatherQueue()
         {
-            bool hazardousActive = _weatherService.IsHazardousWeather;
-
-            // Clear our "awaiting transition" flag once the scheduled hazardous
-            // actually fires. This re-enables queue draining for the next trap.
-            if (_trapScheduledAwaitingTransition && hazardousActive)
-            {
-                _trapScheduledAwaitingTransition = false;
-                Debug.Log("[Archipelago] Scheduled trap hazardous cycle is now active; queue drain re-enabled.");
-            }
-
             if (_weatherTrapQueue.Count == 0) return;
+
+            bool hazardousActive = _weatherService.IsHazardousWeather;
             if (hazardousActive || _trapScheduledAwaitingTransition) return;
 
             _weatherTrapQueue.Dequeue();
             Debug.Log($"[Archipelago] Dequeuing weather trap (remaining: {_weatherTrapQueue.Count})");
             ScheduleHazardousWeather();
+        }
+
+        /// <summary>
+        /// Post-trap cycle hook. Fires when CycleStarted dispatches at the start
+        /// of every cycle. When _trapScheduledAwaitingTransition is set, this is
+        /// the cycle AFTER our trap-induced hazardous resolved.
+        ///
+        /// Passive cleanup: GameCycleService.StartNextCycle has already called
+        /// SetForCycle on each ICycleDuration provider (re-randomizing TempDur)
+        /// and recomputed _cycleDurationInDays from the fresh values. The new
+        /// cycle is in a consistent state by the time CycleStartedEvent fires,
+        /// so this hook just clears the in-flight flag and logs the post-trap
+        /// state for diagnostic comparison against the pre-trap baseline.
+        ///
+        /// Calling SetForCycle here would re-randomize TempDur AFTER
+        /// _cycleDurationInDays was computed, leaving them out of sync — the
+        /// same class of bug we fix on the trap-arrival side by writing both
+        /// fields together.
+        /// </summary>
+        [OnEvent]
+        public void OnCycleStarted(CycleStartedEvent e)
+        {
+            if (!_trapScheduledAwaitingTransition) return;
+
+            int cycle = _gameCycleService.Cycle;
+            int tempDur = _temperateWeatherDurationService.TemperateWeatherDuration;
+            int hazDur = _hazardousWeatherService.HazardousWeatherDuration;
+            int cycleLen = -1;
+            try
+            {
+                var cycleDurationField = _gameCycleService.GetType().GetField(
+                    "_cycleDurationInDays",
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (cycleDurationField != null)
+                    cycleLen = (int)cycleDurationField.GetValue(_gameCycleService);
+            }
+            catch { /* diagnostic-only; fall back to -1 */ }
+
+            Debug.Log($"[Archipelago] Post-trap cycle started: cycle={cycle}, TempDur={tempDur}, " +
+                      $"HazDur={hazDur}, _cycleDurationInDays={cycleLen} " +
+                      $"(expect TempDur+HazDur={tempDur + hazDur}). " +
+                      $"Walk rivers in this temperate to verify water spawn.");
+
+            _trapScheduledAwaitingTransition = false;
+            Debug.Log("[Archipelago] Post-trap cleanup complete, queue drain re-enabled.");
         }
 
         private void TriggerHungryBeavers()
