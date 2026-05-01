@@ -184,10 +184,33 @@ namespace ArchipelagoIntegration
             CurrentSlot  = null;
             CurrentSeed  = null;
             SlotData     = null;
+            ReplayBoundary = 0;
+
+            // Drain queues tied to the dying session so a Disconnect→Reconnect
+            // cycle doesn't replay items/messages from the old socket. The new
+            // session will redeliver everything from scratch via the AP server's
+            // ItemsHandlingFlags.AllItems resync.
+            while (_pendingItems.TryDequeue(out _)) { }
+            while (_pendingMessages.TryDequeue(out _)) { }
+            _pendingLocationChecks.Clear();
+            _goalPending = false;
 
             Debug.Log($"[Archipelago] {reason}");
             _pendingMessages.Enqueue(reason);
             OnConnectionChanged?.Invoke(false, reason);
+        }
+
+        /// <summary>
+        /// Clears per-save static state that DisconnectWithReason intentionally
+        /// preserves (ProcessedItemIndex is per-(save,slot,seed); ConnectionBlocked
+        /// is per-Timberborn-process). Called by ArchipelagoSaveData.Unload on save
+        /// switch so the next save starts from a clean slate. Connection-level
+        /// state (queues, _session, IsConnected) is already handled by Disconnect.
+        /// </summary>
+        public static void ResetSessionState()
+        {
+            ProcessedItemIndex = 0;
+            ConnectionBlocked = false;
         }
 
         // ------------------------------------------------------------------ sending
@@ -312,7 +335,21 @@ namespace ArchipelagoIntegration
 
             while (_pendingItems.TryDequeue(out var item))
             {
-                OnItemReceived?.Invoke(item);
+                try
+                {
+                    OnItemReceived?.Invoke(item);
+                    // Advance the watermark only after the item has actually been
+                    // dispatched. If a handler throws, the item will be re-delivered
+                    // on the next reconnect (server resends full history with
+                    // ItemsHandlingFlags.AllItems) and re-attempted.
+                    if (item.ItemIndex >= ProcessedItemIndex)
+                        ProcessedItemIndex = item.ItemIndex + 1;
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError($"[Archipelago] Item dispatch threw for index {item.ItemIndex} ({item.ItemName}): {ex}");
+                    // Don't advance watermark — let reconnect retry.
+                }
             }
 
             // Retry any pending location checks that failed earlier
@@ -347,18 +384,20 @@ namespace ArchipelagoIntegration
 
         private static void OnNetworkItemReceived(ReceivedItemsHelper helper)
         {
-            // Skip items we already handled in a previous session.
-            // helper.Index is the index of the NEXT item to dequeue.
+            // Skip items we already applied locally (ProcessedItemIndex is the
+            // watermark of items handed to HandleItem successfully — it advances
+            // in DrainItemQueue after apply, NOT here. Advancing on enqueue
+            // would lose items that get queued but never drained, e.g. when a
+            // faction-mismatch disconnect runs before the next frame's drain.)
             while (helper.Any())
             {
                 var info  = helper.DequeueItem();
                 var index = helper.Index - 1; // index of the item we just dequeued
 
                 if (index < ProcessedItemIndex)
-                    continue; // already handled before this session
+                    continue;
 
                 _pendingItems.Enqueue(new ApItem(info, index));
-                ProcessedItemIndex = index + 1;
             }
         }
 

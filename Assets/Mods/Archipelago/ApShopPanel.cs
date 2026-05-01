@@ -96,9 +96,39 @@ namespace ArchipelagoIntegration
             _disconnectButton = _root.Q<Button>("DisconnectButton");
             _connectionStatusLabel = _root.Q<Label>("ConnectionStatus");
 
-            _hostField.value = PlayerPrefs.GetString("AP_Host", "localhost");
-            _portField.value = PlayerPrefs.GetString("AP_Port", "38281");
-            _slotField.value = PlayerPrefs.GetString("AP_Slot", "");
+            // Prefer the save's bound AP identity over PlayerPrefs. PlayerPrefs is
+            // a per-Timberborn-process global, so loading a different save and
+            // falling back to PlayerPrefs would surface the WRONG slot from a
+            // previous manual connect (this was the AppieTimberIT vs AppieTimberFT
+            // confusion in 2026-05-01 testing). Save data is per-save and
+            // authoritative — only fall back to PlayerPrefs when this save has no
+            // binding yet (truly fresh save, no AP data ever).
+            //
+            // Special case: if the save has a Host but no Slot (corruption pattern
+            // from the pre-fix Save bug), populate Host/Port from the save and
+            // leave Slot empty — forcing the user to type the correct slot rather
+            // than auto-filling a wrong one from PlayerPrefs.
+            bool saveHasHost = !string.IsNullOrEmpty(_saveData.SavedHost);
+            bool saveHasSlot = !string.IsNullOrEmpty(_saveData.SavedSlot);
+
+            if (saveHasHost)
+            {
+                _hostField.value = _saveData.SavedHost;
+                _portField.value = _saveData.SavedPort > 0
+                    ? _saveData.SavedPort.ToString()
+                    : PlayerPrefs.GetString("AP_Port", "38281");
+                _slotField.value = saveHasSlot ? _saveData.SavedSlot : "";
+                if (!saveHasSlot)
+                {
+                    Debug.LogWarning("[Archipelago] This save has Host but no Slot — slot identity is incomplete (likely from the pre-fix Save bug). Enter the correct slot name to rebind.");
+                }
+            }
+            else
+            {
+                _hostField.value = PlayerPrefs.GetString("AP_Host", "localhost");
+                _portField.value = PlayerPrefs.GetString("AP_Port", "38281");
+                _slotField.value = PlayerPrefs.GetString("AP_Slot", "");
+            }
 
             _connectButton.RegisterCallback<ClickEvent>(_ => OnConnectClicked());
             _disconnectButton.RegisterCallback<ClickEvent>(_ => OnDisconnectClicked());

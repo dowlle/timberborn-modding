@@ -32,7 +32,7 @@ namespace ArchipelagoIntegration
     /// - Shop layout (from slot_data, for branching shop)
     /// - Skips available
     /// </summary>
-    public class ArchipelagoSaveData : ISaveableSingleton, ILoadableSingleton
+    public class ArchipelagoSaveData : ISaveableSingleton, ILoadableSingleton, IUnloadableSingleton
     {
         private static readonly SingletonKey ArchipelagoKey = new("Archipelago");
         private static readonly PropertyKey<int> ProcessedIndexKey = new("ProcessedItemIndex");
@@ -73,10 +73,26 @@ namespace ArchipelagoIntegration
         /// <summary>Set to true when connection is blocked (e.g. faction mismatch) to prevent auto-reconnect loops.</summary>
         private bool _connectionBlocked;
 
+        // The save's BOUND AP identity. Set once on first successful connect (in
+        // OnConnectionChanged) and persisted by Save() — never cleared by Disconnect.
+        // Source of truth for "what slot does this save belong to?" The live
+        // ArchipelagoManager.Current* statics are connection-state and CANNOT be
+        // used for save identity (Disconnect clears CurrentSlot but leaves CurrentHost,
+        // so a save-while-disconnected used to write Host=valid + Slot=null and lose
+        // the binding).
         private string _savedHost;
         private int _savedPort;
         private string _savedSlot;
         private string _savedSeed;
+
+        /// <summary>Host of the AP server this save is bound to (set on first connect).</summary>
+        public string SavedHost => _savedHost;
+        /// <summary>Port of the AP server this save is bound to.</summary>
+        public int SavedPort => _savedPort;
+        /// <summary>Slot name this save is bound to.</summary>
+        public string SavedSlot => _savedSlot;
+        /// <summary>Seed of the multiworld this save is bound to.</summary>
+        public string SavedSeed => _savedSeed;
 
         /// <summary>
         /// Checked AP location names, persisted across save/load.
@@ -183,10 +199,32 @@ namespace ArchipelagoIntegration
             if (!_singletonLoader.TryGetSingleton(ArchipelagoKey, out var loader))
             {
                 Debug.Log("[Archipelago] No saved AP data found in this save file.");
+                // Fresh save: clear any static state carried over from a previous save
+                // in the same Timberborn process. Without this, ProcessedItemIndex
+                // (and any future static AP state) leaks across save loads and causes
+                // items to be silently skipped in the new slot.
+                ArchipelagoManager.ProcessedItemIndex = 0;
                 return;
             }
 
-            ArchipelagoManager.ProcessedItemIndex = loader.Get(ProcessedIndexKey);
+            var savedIndex = loader.Get(ProcessedIndexKey);
+
+            // Auto-heal carryover-corrupted ProcessedItemIndex from the pre-fix bug:
+            // a non-zero ProcessedItemIndex with an empty ReceivedItems set is
+            // impossible from real play (HandleItem adds to ReceivedItems before
+            // any branching, so every applied item is recorded). When this pattern
+            // is detected, reset to 0 so the AP server's full item history replays
+            // and lands correctly on this save. ReceivedItems / ProgressiveCounters
+            // are empty on broken saves, so replay is idempotent.
+            bool hasReceivedItems = loader.Has(ReceivedItemsKey)
+                && !string.IsNullOrEmpty(loader.Get(ReceivedItemsKey));
+            if (savedIndex > 0 && !hasReceivedItems)
+            {
+                Debug.LogWarning($"[Archipelago] Detected orphaned ProcessedItemIndex={savedIndex} with no applied items in save (likely from a pre-fix carryover bug). Resetting to 0 so the item history replays correctly.");
+                savedIndex = 0;
+            }
+
+            ArchipelagoManager.ProcessedItemIndex = savedIndex;
 
             if (loader.Has(HostKey))
                 _savedHost = loader.Get(HostKey);
@@ -316,6 +354,21 @@ namespace ArchipelagoIntegration
             }
         }
 
+        /// <summary>
+        /// Tears down the AP session when the save unloads (loading another save,
+        /// returning to main menu, quitting). Without this, the static AP state
+        /// (ProcessedItemIndex, queued items, connection flags) leaks into the
+        /// next save load and causes items to be silently skipped or applied to
+        /// the wrong slot. Every other AP class implements IUnloadableSingleton;
+        /// this one was the gap.
+        /// </summary>
+        public void Unload()
+        {
+            ArchipelagoManager.OnConnectionChanged -= OnConnectionChanged;
+            ArchipelagoManager.DisconnectWithReason("Save unloaded");
+            ArchipelagoManager.ResetSessionState();
+        }
+
         private void OnConnectionChanged(bool connected, string message)
         {
             if (!connected) return;
@@ -325,6 +378,20 @@ namespace ArchipelagoIntegration
             var slotData = ArchipelagoManager.SlotData;
             if (!ValidateFaction(slotData))
                 return;
+
+            // Bind this save's identity to the connected slot ON FIRST CONNECT.
+            // Once bound, the save persists this Host/Port/Slot/Seed regardless of
+            // the live ArchipelagoManager.Current* state. Auto-recover the
+            // Host-but-no-Slot corruption pattern by re-binding when the slot was
+            // null in the loaded save (see Save() for why that pattern existed).
+            if (string.IsNullOrEmpty(_savedSlot))
+            {
+                _savedHost = ArchipelagoManager.CurrentHost;
+                _savedPort = ArchipelagoManager.CurrentPort;
+                _savedSlot = ArchipelagoManager.CurrentSlot;
+                _savedSeed = ArchipelagoManager.CurrentSeed;
+                Debug.Log($"[Archipelago] Bound save to AP slot: {_savedHost}:{_savedPort} / {_savedSlot} / seed {_savedSeed}");
+            }
 
             Debug.Log($"[Archipelago] SaveData.OnConnectionChanged — ShopLayout null={ShopLayout == null}, count={ShopLayout?.Count ?? -1}");
 
@@ -488,16 +555,22 @@ namespace ArchipelagoIntegration
             var saver = singletonSaver.GetSingleton(ArchipelagoKey);
             saver.Set(ProcessedIndexKey, ArchipelagoManager.ProcessedItemIndex);
 
-            if (ArchipelagoManager.CurrentHost != null)
-            {
-                saver.Set(HostKey, ArchipelagoManager.CurrentHost);
-                saver.Set(PortKey, ArchipelagoManager.CurrentPort);
-                saver.Set(SlotKey, ArchipelagoManager.CurrentSlot);
-            }
-            if (ArchipelagoManager.CurrentSeed != null)
-            {
-                saver.Set(SeedKey, ArchipelagoManager.CurrentSeed);
-            }
+            // Write the save's BOUND identity (instance fields), NOT the live
+            // ArchipelagoManager.Current* state. Disconnect clears CurrentSlot but
+            // leaves CurrentHost set, so the previous code wrote Host=valid +
+            // Slot=null whenever the user saved while disconnected (network blip,
+            // focus loss, faction-mismatch reject window). That destroyed the
+            // save's slot binding. Instance fields are bound on first connect
+            // (OnConnectionChanged) and never cleared, so this Save round-trips
+            // a stable identity even when we're not currently connected.
+            if (!string.IsNullOrEmpty(_savedHost))
+                saver.Set(HostKey, _savedHost);
+            if (_savedPort > 0)
+                saver.Set(PortKey, _savedPort);
+            if (!string.IsNullOrEmpty(_savedSlot))
+                saver.Set(SlotKey, _savedSlot);
+            if (!string.IsNullOrEmpty(_savedSeed))
+                saver.Set(SeedKey, _savedSeed);
 
             // Persist shop state as pipe-delimited strings
             if (CheckedLocations.Count > 0)
