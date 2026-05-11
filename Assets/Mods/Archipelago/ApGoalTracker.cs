@@ -1,4 +1,3 @@
-using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -239,45 +238,9 @@ namespace ArchipelagoIntegration
 
         private bool EvaluateWaterStorage(int threshold)
         {
-            try
-            {
-                // GoodId may be a struct/record — construct via reflection
-                var goodIdType = typeof(ResourceCountingService).Assembly
-                    .GetType("Timberborn.Goods.GoodId")
-                    ?? Type.GetType("Timberborn.Goods.GoodId, Timberborn.Goods");
-
-                if (goodIdType == null)
-                {
-                    Debug.LogWarning("[Archipelago] Could not find GoodId type");
-                    return false;
-                }
-
-                var waterGoodId = Activator.CreateInstance(goodIdType, "Water");
-
-                // Call GetGlobalResourceCount via reflection since we can't reference GoodId directly
-                var method = _resourceCountingService.GetType().GetMethod("GetGlobalResourceCount");
-                if (method == null)
-                {
-                    Debug.LogWarning("[Archipelago] Could not find GetGlobalResourceCount method");
-                    return false;
-                }
-
-                var resourceCount = method.Invoke(_resourceCountingService, new[] { waterGoodId });
-                var allStockProp = resourceCount.GetType().GetProperty("AllStock");
-                if (allStockProp == null)
-                {
-                    Debug.LogWarning("[Archipelago] Could not find AllStock property on ResourceCount");
-                    return false;
-                }
-
-                var allStock = Convert.ToInt32(allStockProp.GetValue(resourceCount));
-                return allStock >= threshold;
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning($"[Archipelago] Water storage check failed: {ex.Message}");
-                return false;
-            }
+            // GetGlobalResourceCount takes a plain string good ID -- no GoodId wrapper type exists.
+            var resourceCount = _resourceCountingService.GetGlobalResourceCount("Water");
+            return resourceCount.AllStock >= threshold;
         }
 
         private bool EvaluateDroughts(int threshold)
