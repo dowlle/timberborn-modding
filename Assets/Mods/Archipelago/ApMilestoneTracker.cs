@@ -6,6 +6,7 @@ using Newtonsoft.Json.Linq;
 using Timberborn.GameWonderCompletion;
 using Timberborn.HazardousWeatherSystem;
 using Timberborn.Population;
+using Timberborn.ResourceCountingSystem;
 using Timberborn.SingletonSystem;
 using Timberborn.Wellbeing;
 using UnityEngine;
@@ -19,8 +20,9 @@ namespace ArchipelagoIntegration
     {
         public string Name;        // "Population: Reach 15 Beavers"
         public long   LocationId;  // AP location ID
-        public string Type;        // "population", "wellbeing", "survival", "wonder"
+        public string Type;        // "population", "wellbeing", "survival", "wonder", "resource"
         public int    Threshold;   // numeric threshold (10, 5, 1, etc.)
+        public string GoodId;      // game GoodId string for resource milestones (e.g. "Log", "MetalBlock")
     }
 
     /// <summary>
@@ -37,6 +39,7 @@ namespace ArchipelagoIntegration
         private readonly WellbeingService _wellbeingService;
         private readonly HazardousWeatherHistory _weatherHistory;
         private readonly GameWonderCompletionService _wonderService;
+        private readonly ResourceCountingService _resourceCountingService;
         private readonly ArchipelagoSaveData _saveData;
 
         private List<MilestoneDefinition> _milestones = new();
@@ -58,12 +61,14 @@ namespace ArchipelagoIntegration
             WellbeingService wellbeingService,
             HazardousWeatherHistory weatherHistory,
             GameWonderCompletionService wonderService,
+            ResourceCountingService resourceCountingService,
             ArchipelagoSaveData saveData)
         {
             _populationService = populationService;
             _wellbeingService = wellbeingService;
             _weatherHistory = weatherHistory;
             _wonderService = wonderService;
+            _resourceCountingService = resourceCountingService;
             _saveData = saveData;
         }
 
@@ -139,6 +144,8 @@ namespace ArchipelagoIntegration
                     return EvaluateSurvival(m);
                 case "wonder":
                     return EvaluateWonder(m);
+                case "resource":
+                    return EvaluateResource(m);
                 default:
                     return false;
             }
@@ -218,6 +225,18 @@ namespace ArchipelagoIntegration
             return (bool)_isWonderCompletedMethod.Invoke(_wonderService, null);
         }
 
+        private bool EvaluateResource(MilestoneDefinition m)
+        {
+            if (string.IsNullOrEmpty(m.GoodId))
+            {
+                Debug.LogWarning($"[Archipelago] Resource milestone '{m.Name}' has no GoodId — skipping");
+                return false;
+            }
+
+            var resourceCount = _resourceCountingService.GetGlobalResourceCount(m.GoodId);
+            return resourceCount.AllStock >= m.Threshold;
+        }
+
         /// <summary>
         /// Parse milestone definitions from slot_data.
         /// Called by ArchipelagoSaveData when slot_data arrives.
@@ -250,6 +269,7 @@ namespace ArchipelagoIntegration
                     LocationId = item["location_id"]?.ToObject<long>() ?? 0,
                     Type = item["type"]?.ToString() ?? "unknown",
                     Threshold = item["threshold"]?.ToObject<int>() ?? 0,
+                    GoodId = item["good_id"]?.ToString() ?? "",
                 });
             }
 
