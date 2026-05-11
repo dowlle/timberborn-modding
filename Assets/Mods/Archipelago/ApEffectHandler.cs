@@ -67,6 +67,7 @@ namespace ArchipelagoIntegration
         private Type _inventoryType;
         private MethodInfo _giveIgnoringCapacityMethod;
         private MethodInfo _givesMethod;
+        private PropertyInfo _publicInputProperty;  // Inventory.PublicInput — filters out carry slots + internal buffers
         private bool _inventorySystemSearched;
 
         // BonusManager resolved via reflection
@@ -843,12 +844,27 @@ namespace ArchipelagoIntegration
                 return;
             }
 
-            // Prefer inventories that explicitly accept this good (stockpiles over
-            // beaver-carry inventories). Fall back to any inventory if nothing matches.
+            // Filter to public-input inventories only (stockpiles, ground piles).
+            // PublicInput=true distinguishes player-accessible storage from carry slots,
+            // construction material buffers, and internal building inventories. Without
+            // this filter, the first available inventory could be a beaver's carry slot
+            // or a workshop input buffer, leaving goods invisible to the player.
+            var publicInputs = new List<object>();
+            foreach (var inv in inventories)
+            {
+                try
+                {
+                    if (_publicInputProperty?.GetValue(inv) is bool pub && pub)
+                        publicInputs.Add(inv);
+                }
+                catch { /* skip on reflection issue */ }
+            }
+
+            // Among public-input inventories, prefer those that explicitly accept this good.
             var accepting = new List<object>();
             if (_givesMethod != null)
             {
-                foreach (var inv in inventories)
+                foreach (var inv in publicInputs)
                 {
                     try
                     {
@@ -858,7 +874,16 @@ namespace ArchipelagoIntegration
                     catch { /* skip on reflection issue */ }
                 }
             }
-            var candidates = accepting.Count > 0 ? accepting : inventories;
+
+            // Candidate priority: public-input + accepts good > any public-input > (last resort) any inventory.
+            // Never write to carry slots or internal buffers if we can avoid it.
+            List<object> candidates;
+            if (accepting.Count > 0)
+                candidates = accepting;
+            else if (publicInputs.Count > 0)
+                candidates = publicInputs;
+            else
+                candidates = inventories; // last resort — all inventories exhausted
 
             bool injected = false;
             foreach (var inventory in candidates)
@@ -867,9 +892,9 @@ namespace ArchipelagoIntegration
                 {
                     _giveIgnoringCapacityMethod.Invoke(inventory, new[] { goodAmount });
                     injected = true;
-                    Debug.Log($"[Archipelago] Injected {amount} {goodIdStr} into an inventory " +
-                              $"({accepting.Count} accepting of {inventories.Count} total)");
-                    break; // GiveIgnoringCapacity handles the full amount
+                    Debug.Log($"[Archipelago] Injected {amount} {goodIdStr} into a stockpile " +
+                              $"({accepting.Count} accepting / {publicInputs.Count} public of {inventories.Count} total)");
+                    break; // GiveIgnoringCapacity handles the full amount in one call
                 }
                 catch (Exception ex)
                 {
@@ -879,8 +904,8 @@ namespace ArchipelagoIntegration
             }
 
             if (!injected)
-                Debug.LogWarning($"[Archipelago] Could not inject {amount} {goodIdStr} — no accepting inventory found " +
-                                 $"(checked {candidates.Count} candidate(s))");
+                Debug.LogWarning($"[Archipelago] Could not inject {amount} {goodIdStr} — no suitable inventory found " +
+                                 $"(accepting={accepting.Count}, public={publicInputs.Count}, total={inventories.Count})");
         }
 
         private void EnsureInventorySystemResolved()
@@ -902,12 +927,16 @@ namespace ArchipelagoIntegration
             {
                 // Gives(string goodId) — filters out inventories that don't accept a good
                 _givesMethod = _inventoryType.GetMethod("Gives", new[] { typeof(string) });
+                // PublicInput — true on stockpiles and ground piles; false on carry slots,
+                // construction buffers, and internal building inventories
+                _publicInputProperty = _inventoryType.GetProperty("PublicInput");
             }
 
             Debug.Log($"[Archipelago] InventorySystem resolved: Inventory={_inventoryType != null}, " +
                       $"GoodAmount={_goodAmountType != null}, " +
                       $"GiveIgnoringCapacity={_giveIgnoringCapacityMethod != null}, " +
-                      $"Gives={_givesMethod != null}");
+                      $"Gives={_givesMethod != null}, " +
+                      $"PublicInput={_publicInputProperty != null}");
         }
 
         // =================================================================
