@@ -273,6 +273,36 @@ namespace ArchipelagoIntegration
             }
         }
 
+        /// <summary>
+        /// Broadcasts location hints to the server for the given location IDs.
+        /// Uses HintCreationPolicy.CreateAndAnnounce so all players in the multiworld
+        /// see what items are at those locations. Fire-and-forget; errors are logged.
+        /// Called when a Scout item is received to reveal a shop path's contents.
+        /// </summary>
+        public static void BroadcastLocationHints(long[] locationIds)
+        {
+            if (!IsConnected || _session == null || locationIds.Length == 0) return;
+            try
+            {
+                // ScoutLocationsAsync is async; we fire-and-forget from the main thread.
+                // The continuation only logs, so it's safe to discard the Task.
+                var task = _session.Locations.ScoutLocationsAsync(
+                    Archipelago.MultiClient.Net.Enums.HintCreationPolicy.CreateAndAnnounce,
+                    locationIds);
+                task.ContinueWith(t =>
+                {
+                    if (t.IsFaulted)
+                        Debug.LogWarning($"[Archipelago] BroadcastLocationHints failed: {t.Exception?.InnerException?.Message}");
+                    else
+                        Debug.Log($"[Archipelago] Broadcasted hints for {locationIds.Length} location(s)");
+                });
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[Archipelago] BroadcastLocationHints threw: {ex.Message}");
+            }
+        }
+
         // ------------------------------------------------------------------ server state queries
 
         /// <summary>Returns all location IDs the server considers checked for this slot.</summary>

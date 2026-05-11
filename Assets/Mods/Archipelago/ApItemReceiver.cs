@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Timberborn.Buildings;
 using Timberborn.ScienceSystem;
 using Timberborn.SingletonSystem;
@@ -80,11 +81,25 @@ namespace ArchipelagoIntegration
             if (item.ItemName.StartsWith("Scout: Path "))
             {
                 var pathLetter = item.ItemName.Substring("Scout: Path ".Length);
+                bool alreadyScouted = _saveData.ScoutedPaths.Contains(pathLetter);
                 _saveData.ScoutedPaths.Add(pathLetter);
-                if (!item.IsReplay)
+
+                if (!item.IsReplay && !alreadyScouted)
                 {
                     Debug.Log($"[Archipelago] Path {pathLetter} scouted (from {item.SenderName})");
                     ArchipelagoManager.PostLogMessage($"Path {pathLetter} scouted! Building names revealed.");
+
+                    // Broadcast hints for every location on this path so all players
+                    // in the multiworld see what items are at these locations.
+                    if (_saveData.ShopLayout != null)
+                    {
+                        var pathLocationIds = _saveData.ShopLayout
+                            .Where(slot => slot.Path == pathLetter)
+                            .Select(slot => slot.LocationId)
+                            .ToArray();
+                        if (pathLocationIds.Length > 0)
+                            ArchipelagoManager.BroadcastLocationHints(pathLocationIds);
+                    }
                 }
                 return;
             }

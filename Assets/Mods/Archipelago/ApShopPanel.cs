@@ -389,7 +389,7 @@ namespace ArchipelagoIntegration
                 {
                     // Tier locked
                     bool scouted = _saveData.ScoutedPaths.Contains(path);
-                    card.BuildingNameLabel.text = scouted ? next.Slot.BuildingName : "???";
+                    card.BuildingNameLabel.text = scouted ? GetScoutedName(next.Slot) : "???";
                     card.BuildingNameLabel.style.display = DisplayStyle.Flex;
                     card.PriceLabel.text = $"{next.Slot.Price} SC";
                     card.PriceLabel.style.display = DisplayStyle.Flex;
@@ -408,7 +408,7 @@ namespace ArchipelagoIntegration
                 {
                     // Available
                     bool scouted = _saveData.ScoutedPaths.Contains(path);
-                    card.BuildingNameLabel.text = scouted ? next.Slot.BuildingName : "???";
+                    card.BuildingNameLabel.text = scouted ? GetScoutedName(next.Slot) : "???";
                     card.BuildingNameLabel.style.display = DisplayStyle.Flex;
                     bool canAfford = _scienceService.SciencePoints >= next.Slot.Price;
                     card.PriceLabel.text = $"{next.Slot.Price} SC";
@@ -426,6 +426,34 @@ namespace ArchipelagoIntegration
                     card.Container.AddToClassList("ap-shop__path-card--available");
                 }
             }
+        }
+
+        // =================================================================
+        // Scout name resolution
+        // =================================================================
+
+        /// <summary>
+        /// Returns the display name for a scouted shop slot.
+        /// Prefers the actual AP item name from ShopPlacements (v0.0.6+), which
+        /// reflects what the multiworld placed at the location after fill.
+        /// Falls back to ShopSlot.BuildingName for seeds generated with v0.0.5.x
+        /// slot_data that lacks the shop_placements field.
+        /// Strips the "Blueprint: " prefix for cleaner display.
+        /// </summary>
+        private string GetScoutedName(ShopSlot slot)
+        {
+            var locIdStr = slot.LocationId.ToString();
+            if (_saveData.ShopPlacements.TryGetValue(locIdStr, out var apName) &&
+                !string.IsNullOrEmpty(apName))
+            {
+                // Strip "Blueprint: " prefix — players see building names, not AP item names.
+                // Non-blueprint items (Boost, Skip, Filler) display their full AP name.
+                return apName.StartsWith("Blueprint: ")
+                    ? apName.Substring("Blueprint: ".Length)
+                    : apName;
+            }
+            // Backward-compat: v0.0.5.x slot_data, no shop_placements
+            return slot.BuildingName;
         }
 
         // =================================================================

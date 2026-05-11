@@ -57,6 +57,7 @@ namespace ArchipelagoIntegration
         private static readonly PropertyKey<string> ScoutedPathsKey = new("ScoutedPaths");
         private static readonly PropertyKey<int> BaselineDroughtKey = new("BaselineDroughtCount");
         private static readonly PropertyKey<int> BaselineBadtideKey = new("BaselineBadtideCount");
+        private static readonly PropertyKey<string> ShopPlacementsKey = new("ShopPlacements");
 
         /// <summary>Fired when ShopLayout becomes available (from save or slot_data).</summary>
         public static event Action OnShopLayoutAvailable;
@@ -157,6 +158,14 @@ namespace ArchipelagoIntegration
 
         /// <summary>Path letters that have been scouted (building names revealed).</summary>
         public HashSet<string> ScoutedPaths { get; } = new();
+
+        /// <summary>
+        /// Maps shop location_id (as string) to the actual AP item name placed there.
+        /// Populated from slot_data.shop_placements on connect.
+        /// Persisted so scout reveals work offline after the first connect.
+        /// Falls back to ShopSlot.BuildingName when absent (v0.0.5.x backward-compat).
+        /// </summary>
+        public Dictionary<string, string> ShopPlacements { get; private set; } = new();
 
         public ArchipelagoSaveData(ISingletonLoader singletonLoader, FactionService factionService)
         {
@@ -328,6 +337,12 @@ namespace ArchipelagoIntegration
                 if (!string.IsNullOrEmpty(raw))
                     foreach (var p in raw.Split('|'))
                         ScoutedPaths.Add(p);
+            }
+            if (loader.Has(ShopPlacementsKey))
+            {
+                var raw = loader.Get(ShopPlacementsKey);
+                if (!string.IsNullOrEmpty(raw))
+                    ShopPlacements = DeserializeShopPlacements(raw);
             }
 
             Debug.Log($"[Archipelago] Loaded save data: ProcessedItemIndex={ArchipelagoManager.ProcessedItemIndex}, " +
@@ -611,6 +626,8 @@ namespace ArchipelagoIntegration
                 saver.Set(ActiveBoostsKey, string.Join("|", ActiveBoosts));
             if (ScoutedPaths.Count > 0)
                 saver.Set(ScoutedPathsKey, string.Join("|", ScoutedPaths));
+            if (ShopPlacements.Count > 0)
+                saver.Set(ShopPlacementsKey, SerializeShopPlacements(ShopPlacements));
         }
 
         /// <summary>
@@ -635,6 +652,14 @@ namespace ArchipelagoIntegration
             else
             {
                 Debug.LogWarning("[Archipelago] slot_data has no 'shop_layout' key");
+            }
+
+            // shop_placements: {location_id_str: ap_item_name} — added in v0.0.6.
+            // Absent in v0.0.5.x slot_data; the client falls back to ShopSlot.BuildingName.
+            if (slotData.TryGetValue("shop_placements", out var placementsObj) && placementsObj != null)
+            {
+                ShopPlacements = ParseShopPlacementsFromSlotData(placementsObj);
+                Debug.Log($"[Archipelago] Parsed shop_placements from slot_data: {ShopPlacements.Count} entries");
             }
         }
 
@@ -840,6 +865,52 @@ namespace ArchipelagoIntegration
 
             Debug.LogWarning($"[Archipelago] Cannot parse progressive_chains: " +
                              $"expected JObject, got {chainsObj?.GetType().FullName}");
+            return result;
+        }
+
+        // -----------------------------------------------------------------
+        // ShopPlacements serialization
+        // Format: "locId1=itemName1;locId2=itemName2"
+        // Item names may contain commas (e.g. "Filler: 50 Logs") so = is the separator.
+        // -----------------------------------------------------------------
+
+        private static string SerializeShopPlacements(Dictionary<string, string> placements)
+        {
+            return string.Join(";", placements.Select(kvp => $"{kvp.Key}={kvp.Value}"));
+        }
+
+        private static Dictionary<string, string> DeserializeShopPlacements(string raw)
+        {
+            var result = new Dictionary<string, string>();
+            foreach (var entry in raw.Split(';'))
+            {
+                var eqIdx = entry.IndexOf('=');
+                if (eqIdx < 0) continue;
+                result[entry.Substring(0, eqIdx)] = entry.Substring(eqIdx + 1);
+            }
+            return result;
+        }
+
+        private static Dictionary<string, string> ParseShopPlacementsFromSlotData(object placementsObj)
+        {
+            var result = new Dictionary<string, string>();
+
+            Newtonsoft.Json.Linq.JObject jObj = null;
+            if (placementsObj is Newtonsoft.Json.Linq.JObject j)
+                jObj = j;
+            else if (placementsObj is Newtonsoft.Json.Linq.JToken tok &&
+                     tok.Type == Newtonsoft.Json.Linq.JTokenType.Object)
+                jObj = (Newtonsoft.Json.Linq.JObject)tok;
+
+            if (jObj != null)
+            {
+                foreach (var prop in jObj.Properties())
+                    result[prop.Name] = prop.Value.ToString();
+                return result;
+            }
+
+            Debug.LogWarning($"[Archipelago] Cannot parse shop_placements: " +
+                             $"expected JObject, got {placementsObj?.GetType().FullName}");
             return result;
         }
     }
