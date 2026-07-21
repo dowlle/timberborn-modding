@@ -13,6 +13,10 @@ namespace ArchipelagoIntegration
     /// science unlock UI.  Sets ScienceCost to int.MaxValue for every AP building
     /// at game load time.  AP-driven unlocks use UnlockIgnoringCost and are
     /// unaffected by the inflated cost.
+    ///
+    /// Wonder buildings (EarthRecultivator.Folktails, EarthRepopulator.IronTeeth)
+    /// are excluded: they are not AP items (no blueprint item exists in the pool)
+    /// so they must unlock via vanilla science progression instead.
     /// </summary>
     public class VanillaUnlockBlocker : ILoadableSingleton
     {
@@ -45,6 +49,16 @@ namespace ArchipelagoIntegration
             foreach (var entry in ApBuildingLocations.GetEntries(faction))
             {
                 var templateName = entry.Key;
+
+                // Wonder buildings have no AP blueprint item in the pool — they must
+                // unlock via vanilla science progression so the Wonder goal is completable.
+                if (templateName == "EarthRecultivator.Folktails" ||
+                    templateName == "EarthRepopulator.IronTeeth")
+                {
+                    Debug.Log($"[Archipelago] VanillaUnlockBlocker: skipping wonder building '{templateName}' (unlocks via vanilla science)");
+                    continue;
+                }
+
                 if (!_templateNameMapper.TryGetTemplate(templateName, out var template))
                 {
                     Debug.LogWarning($"[Archipelago] VanillaUnlockBlocker: template '{templateName}' not found");
