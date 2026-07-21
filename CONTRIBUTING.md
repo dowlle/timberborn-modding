@@ -13,7 +13,13 @@ Timberborn Archipelago is two codebases that have to agree with each other:
 | Half | Language | What lives there |
 |---|---|---|
 | **Client mod** (this repo) | Unity / C# | In-game behaviour: unlock blocking, item delivery, goal and milestone tracking, the AP shop and connect panels. All of it under `Assets/Mods/Archipelago/`. |
-| **APWorld** | Python | Generation-side logic: the item pool, locations, access rules, building tiers, shop layout and YAML options. |
+| **APWorld** ([`dowlle/TimberbornArchipelago`](https://github.com/dowlle/TimberbornArchipelago)) | Python | Generation-side logic: the item pool, locations, access rules, building tiers, shop layout and YAML options. Lives under `worlds/timberborn/` in an Archipelago fork. |
+
+**Issues for both halves belong here, in this repository**, including APWorld
+ones. Note that this repo is a fork of `mechanistry/timberborn-modding`, so both
+the GitHub UI and the `gh` CLI will happily send you to Mechanistry's tracker
+instead. They maintain the modding tools, not this randomizer. If you use `gh`,
+pass `--repo dowlle/timberborn-modding` explicitly.
 
 Both sides carry their own copy of some data, notably building tiers and the
 building list. If you change one, check whether the other needs the same change.
@@ -57,15 +63,22 @@ a pull request.
 
 ## Working on the APWorld
 
+The APWorld lives in a separate repository,
+[`dowlle/TimberbornArchipelago`](https://github.com/dowlle/TimberbornArchipelago),
+which is a fork of Archipelago with the world under `worlds/timberborn/`.
+
 Run the test suite from the Archipelago root:
 
 ```
 python -m unittest discover -s worlds/timberborn/test -t .
 ```
 
-**Use Python 3.11 or newer.** Archipelago 0.6.7 imports `typing.Self`, so on
-Python 3.10 the entire test suite fails to collect with an unrelated-looking
-`ImportError`. If you see that, it is your interpreter version and not your change.
+**Use Python 3.11 or 3.12.** This is a narrower window than it looks, in both
+directions. On **3.10** Archipelago 0.6.7 imports `typing.Self` and the entire
+suite fails to collect with an unrelated-looking `ImportError`. On **3.13+** some
+of Archipelago's own dependencies are not yet available, so the environment will
+not build at all. Development is done on 3.12. If a failure looks nothing like
+your change, check your interpreter version first.
 
 There is also a fuzzer for generation stability:
 
@@ -84,6 +97,18 @@ please run:
 ```
 python scripts/check_ap_consistency.py --blueprints <path-to>/StreamingAssets/Modding/Blueprints.zip
 ```
+
+This is the one tool that reads **both** halves, so it needs the APWorld too. It
+finds it automatically if `TimberbornArchipelago` is checked out beside this
+repo; otherwise point at it:
+
+```
+python scripts/check_ap_consistency.py --items <path-to>/worlds/timberborn/Items.py
+```
+
+`--blueprints` is optional and enables the second check below. It takes either
+the game's `StreamingAssets/Modding/Blueprints.zip` directly, which needs no
+Unity import, or the importer's output directory.
 
 It catches the two ways the two halves drift apart, both of which are silent in
 normal play:
@@ -119,6 +144,18 @@ building can legitimately sit behind a late tier.
 
 All pull requests get reviewed. I am the only one with write access here, so
 nothing merges automatically.
+
+### Licensing
+
+This repository is a fork of Mechanistry's Timberborn modding tools and keeps
+their MIT license, which is what `LICENSE` in the root refers to. The
+Archipelago-specific code under `Assets/Mods/Archipelago/` is offered under those
+same MIT terms, and by opening a pull request you agree your contribution is
+licensed that way. The APWorld repository is likewise a fork of Archipelago and
+carries Archipelago's MIT license.
+
+Bundled third-party components keep their own licenses, notably
+`Archipelago.MultiClient.Net`.
 
 ## Contact
 
