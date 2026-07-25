@@ -1,0 +1,14 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Installing and playing
+    url: https://github.com/dowlle/timberborn-modding#installing
+    about: What the three release files are, where each one goes, and who needs which.
+  - name: Contributing, and how the two halves fit together
+    url: https://github.com/dowlle/timberborn-modding/blob/main/CONTRIBUTING.md
+    about: The mod and APWorld split, the build setup, and the Unity gotcha that will bite you first.
+  - name: General Timberborn modding, not this randomizer
+    url: https://github.com/mechanistry/timberborn-modding/wiki
+    about: This repository is a fork of Mechanistry's official modding tools. Their wiki covers modding Timberborn in general.
+  - name: New to Archipelago itself
+    url: https://archipelago.gg/tutorial/
+    about: Setting up a multiworld, YAMLs and rooms in general, rather than anything Timberborn-specific.

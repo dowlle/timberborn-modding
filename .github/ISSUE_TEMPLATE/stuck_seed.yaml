@@ -1,0 +1,103 @@
+name: Stuck or impossible seed
+description: You cannot progress, or a check or goal looks unreachable.
+title: "[Seed] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this when the mod works but the **seed** looks wrong: a shop location you can
+        never afford or unlock, a goal you cannot reach, or a colony that cannot progress
+        with what the multiworld has sent.
+
+        These are logic and option problems, so the YAML and the seed matter more here
+        than a log does.
+
+  - type: textarea
+    id: stuck-on
+    attributes:
+      label: What are you stuck on?
+      description: |
+        What you cannot reach or cannot do, and what you have already tried. Please say
+        which shop path and location, or which goal, if it is one of those.
+      placeholder: |
+        Iron Teeth colony. Logic expects me to make Dynamite, but nothing I have unlocked
+        gives me a way to get badwater.
+    validations:
+      required: true
+
+  - type: input
+    id: versions
+    attributes:
+      label: Mod version, APWorld version and Timberborn version
+      description: All three, including whether you are on the experimental branch.
+      placeholder: mod v0.0.5.2, apworld 0.0.6, Timberborn 1.1.1.1 experimental
+    validations:
+      required: true
+
+  - type: dropdown
+    id: faction
+    attributes:
+      label: Faction
+      description: |
+        Ask this first, answer this first. The two factions reach the same materials at
+        different points, and more than one logic bug has been faction-specific.
+      options:
+        - Folktails
+        - Iron Teeth
+    validations:
+      required: true
+
+  - type: textarea
+    id: yaml
+    attributes:
+      label: Your YAML
+      description: |
+        Required. Goal selection, logic difficulty, science cost settings and the milestone
+        toggles all change what the seed expects of you, so without this we can only guess.
+      render: yaml
+    validations:
+      required: true
+
+  - type: input
+    id: room
+    attributes:
+      label: Room link or seed number
+      description: |
+        A room link or seed number lets the exact seed be regenerated, which is far faster
+        than reasoning about it. If the room is private, say so and we will work from the YAML.
+      placeholder: https://archipelago.gg/room/...
+    validations:
+      required: false
+
+  - type: dropdown
+    id: solo-or-multi
+    attributes:
+      label: Solo or multiworld?
+      options:
+        - Solo (only Timberborn in the room)
+        - Multiworld with other games
+        - Multiworld with more than one Timberborn slot
+    validations:
+      required: true
+
+  - type: textarea
+    id: received
+    attributes:
+      label: What have you received so far?
+      description: |
+        The items list from the Archipelago panel, or a screenshot of it. This is what
+        tells us whether logic really did strand you or whether something is unlocked but
+        not visible.
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: |
+        A spoiler log helps enormously, but only attach it if you are happy to have it
+        public: it reveals the whole seed. A save file and `Player.log` are welcome too.
+    validations:
+      required: false

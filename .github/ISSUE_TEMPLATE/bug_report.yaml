@@ -1,0 +1,130 @@
+name: Bug report
+description: Something in the mod or the randomizer is broken or behaving wrong.
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. This tracker covers **both halves** of Timberborn Archipelago,
+        the in-game Unity mod and the APWorld, so file here either way and it will be routed.
+
+        If a **seed looks impossible to finish** rather than broken, use the
+        "Stuck or impossible seed" form instead.
+
+        This is a fork of Mechanistry's official modding tools. For general Timberborn
+        modding questions that are not about this randomizer, their wiki is the better place.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What went wrong, and what you expected instead.
+      placeholder: Boosts I received from the multiworld do not apply to beavers born after the item arrived.
+    validations:
+      required: true
+
+  - type: input
+    id: mod-version
+    attributes:
+      label: Mod version and APWorld version
+      description: |
+        From the release you installed. Please give both: they ship together and a
+        mismatched pair produces confusing symptoms.
+      placeholder: mod v0.0.5.2, timberborn.apworld 0.0.6
+    validations:
+      required: true
+
+  - type: input
+    id: game-version
+    attributes:
+      label: Timberborn version and branch
+      description: |
+        Including whether you are on the experimental branch. The randomizer tracks
+        specific game versions and building ids move between them.
+      placeholder: 1.1.1.1, experimental branch
+    validations:
+      required: true
+
+  - type: dropdown
+    id: faction
+    attributes:
+      label: Faction
+      description: |
+        The two factions have different buildings and different progression, and several
+        problems so far have existed on exactly one of them.
+      options:
+        - Folktails
+        - Iron Teeth
+        - Both, or not faction-specific
+    validations:
+      required: true
+
+  - type: textarea
+    id: other-mods
+    attributes:
+      label: Other mods you have enabled
+      description: |
+        The full list from the in-game Mod Manager, or "none but Archipelago". Mod
+        interactions are common enough that this is worth asking every time.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: |
+        As precise as you can be, including roughly where in a run you were. A sequence
+        beats a description every time.
+      placeholder: |
+        1. Start a Folktails colony with the mod connected
+        2. Receive the faster working speed boost
+        3. Wait for a beaver to be born
+        4. The new beaver works at the base speed
+    validations:
+      required: true
+
+  - type: textarea
+    id: player-log
+    attributes:
+      label: Player.log
+      description: |
+        Timberborn writes a Unity `Player.log`, usually under
+        `%USERPROFILE%\AppData\LocalLow\Mechanistry\Timberborn` on Windows. Drag it in
+        here, or paste the section around the problem. The mod logs its own lines there,
+        and startup failures in particular only show up in that file.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: yaml
+    attributes:
+      label: Your YAML, or the options you changed from the defaults
+      render: yaml
+    validations:
+      required: false
+
+  - type: dropdown
+    id: save-reload
+    attributes:
+      label: Does it survive a save and reload?
+      description: |
+        A problem that a reload clears is live mod state. A problem baked into the save or
+        the seed is a different animal, so this splits the search in half immediately.
+      options:
+        - Have not tried
+        - "Yes, it is still there after reloading the save"
+        - "No, reloading fixes it"
+        - It only happens right after connecting
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Screenshots, a save file, or anything else that seemed relevant.
+    validations:
+      required: false
