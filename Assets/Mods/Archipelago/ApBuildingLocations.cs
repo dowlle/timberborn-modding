@@ -21,6 +21,20 @@ namespace ArchipelagoIntegration
 
         private static readonly Dictionary<string, string> TemplateToBuilding = new()
         {
+            // Timberborn 1.1 additions. Existing AP names retain their aliases.
+            { "Airlock.Folktails", "Airlock" },
+            { "Airlock.IronTeeth", "Airlock" },
+            { "ImpermeablePowerShaft.Folktails", "Impermeable Power Shaft" },
+            { "ImpermeablePowerShaft.IronTeeth", "Impermeable Power Shaft" },
+            { "CompactMechanicalPump.Folktails", "Compact Mechanical Pump" },
+            { "CompactMechanicalPump.IronTeeth", "Compact Mechanical Pump" },
+            { "HallOfAbundance.Folktails", "Hall of Abundance" },
+            { "Sauna.Folktails", "Sauna" },
+            { "DomedGarden.Folktails", "Domed Garden" },
+            { "ArchOfProgress.IronTeeth", "Arch of Progress" },
+            { "Massager.IronTeeth", "Massager" },
+            { "ImpermeableTubeway.IronTeeth", "Impermeable Tubeway" },
+            { "DancePit.IronTeeth", "Dance Pit" },
             // ----- Folktails entries (128 = 86 shared + 42 FT-only) -----
             { "Agora.Folktails", "Agora" },
             { "AquaticFarmhouse.Folktails", "Aquatic Farmhouse" },
@@ -312,6 +326,7 @@ namespace ArchipelagoIntegration
 
         private static readonly HashSet<string> Tier2Buildings = new()
         {
+            "Sauna", "Massager",
             // Shared T2
             "Medium Tank", "Vertical Power Shaft", "Chronometer",
             "Lever", "Relay", "Flow Sensor",
@@ -324,6 +339,7 @@ namespace ArchipelagoIntegration
 
         private static readonly HashSet<string> Tier3Buildings = new()
         {
+            "Airlock", "Impermeable Power Shaft", "Impermeable Tubeway",
             // Shared T3
             "Smelter", "Bot Part Factory", "Bot Assembler",
             "Large Tank", "Badwater Pump", "Fill Valve", "Aquifer Drill",
@@ -343,10 +359,12 @@ namespace ArchipelagoIntegration
             "Decontamination Pod", "Wind Tunnel",
             "Tubeway", "Vertical Tubeway", "Tubeway Station",
             "Brazier", "Bell", "Decorative Clock",
+            "Exercise Plaza", "Tribute to Ingenuity",
         };
 
         private static readonly HashSet<string> Tier4Buildings = new()
         {
+            "Compact Mechanical Pump", "Hall of Abundance", "Domed Garden", "Arch of Progress",
             // Shared T4
             "Large Water Pump", "Mechanical Fluid Pump", "Valve",
             "Dynamite", "Double Dynamite", "Terrain Block",
@@ -361,15 +379,16 @@ namespace ArchipelagoIntegration
             "Coffee Brewery", "Advanced Breeding Pod",
             "Deep Mechanical Fluid Pump", "Badwater Discharge",
             "Irrigation Barrier", "Efficient Mine", "Grease Factory",
-            "Motivatorium", "Mud Bath", "Tribute to Ingenuity",
+            "Motivatorium", "Mud Bath",
         };
 
         private static readonly HashSet<string> Tier5Buildings = new()
         {
+            "Dance Pit",
             // IT-only T5
             "Oil Press", "Hydroponic Garden", "Deep Badwater Pump",
             "Steam Engine", "Charging Station", "Numbercruncher",
-            "Exercise Plaza", "Metal Fence", "Beaver Bust",
+            "Metal Fence", "Beaver Bust",
             "Flame of Unity",
         };
 
@@ -404,7 +423,8 @@ namespace ArchipelagoIntegration
                 case ApTier.Tier1:
                     return true;
                 case ApTier.Tier2:
-                    return receivedItems.Contains("Blueprint: Gear Workshop");
+                    return receivedItems.Contains("Blueprint: Forester")
+                        && receivedItems.Contains("Blueprint: Gear Workshop");
                 case ApTier.Tier3:
                     bool hasTier2 = IsTierUnlocked(ApTier.Tier2, receivedItems, faction);
                     bool hasSmelter = receivedItems.Contains("Blueprint: Smelter");
@@ -424,6 +444,15 @@ namespace ArchipelagoIntegration
                     return false;
             }
         }
+
+        // -----------------------------------------------------------------
+        // Building requirements beyond the slot tier. Mirrors Rules.py.
+        // -----------------------------------------------------------------
+
+        public static bool HasBuildingPrerequisites(string buildingName, HashSet<string> receivedItems,
+                                                    string faction = "Folktails")
+            => buildingName != "Dance Pit" || faction != "IronTeeth"
+                || receivedItems.Contains("Blueprint: Metalsmith");
 
         // -----------------------------------------------------------------
         // Faction helper
@@ -524,7 +553,7 @@ namespace ArchipelagoIntegration
         {
             switch (tier)
             {
-                case 2: return "Requires: Gear Workshop";
+                case 2: return "Requires: Forester + Gear Workshop";
                 case 3:
                     return faction == "IronTeeth"
                         ? "Requires: Smelter"

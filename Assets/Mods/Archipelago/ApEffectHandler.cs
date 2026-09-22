@@ -825,7 +825,7 @@ namespace ArchipelagoIntegration
             }
             if (_inventoryType == null || _giveIgnoringCapacityMethod == null)
             {
-                Debug.LogWarning("[Archipelago] Could not resolve Inventory.GiveIgnoringCapacity for goods injection");
+                Debug.LogWarning("[Archipelago] Could not resolve an overflow-preserving Inventory delivery method for goods injection");
                 return;
             }
 
@@ -918,9 +918,8 @@ namespace ArchipelagoIntegration
 
             if (_inventoryType != null && _goodAmountType != null)
             {
-                // GiveIgnoringCapacity(GoodAmount good) — verified single-param signature
-                _giveIgnoringCapacityMethod = _inventoryType.GetMethod(
-                    "GiveIgnoringCapacity", new[] { _goodAmountType });
+                _giveIgnoringCapacityMethod = InventoryDeliveryCompatibility.ResolveGiveIgnoringCapacity(
+                    _inventoryType, _goodAmountType);
             }
 
             if (_inventoryType != null)
@@ -934,7 +933,7 @@ namespace ArchipelagoIntegration
 
             Debug.Log($"[Archipelago] InventorySystem resolved: Inventory={_inventoryType != null}, " +
                       $"GoodAmount={_goodAmountType != null}, " +
-                      $"GiveIgnoringCapacity={_giveIgnoringCapacityMethod != null}, " +
+                      $"DeliveryMethod={_giveIgnoringCapacityMethod?.Name ?? "unavailable"}, " +
                       $"Gives={_givesMethod != null}, " +
                       $"PublicInput={_publicInputProperty != null}");
         }

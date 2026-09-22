@@ -290,12 +290,14 @@ namespace ArchipelagoIntegration
             string faction = ApBuildingLocations.GetFaction();
             if (!ApBuildingLocations.IsTierUnlocked(entry.Slot.Tier, _saveData.ReceivedItems, faction))
                 return false;
+            if (!ApBuildingLocations.HasBuildingPrerequisites(entry.Slot.BuildingName, _saveData.ReceivedItems, faction))
+                return false;
 
             if (entry.Index == 0)
                 return true;
 
             var prev = _pathSlots[entry.Path][entry.Index - 1];
-            return IsBranchSlotChecked(prev);
+            return IsBranchSlotChecked(prev) && _saveData.ReceivedItems.Contains("Blueprint: Forester");
         }
 
         private bool CanPurchaseBranchSlot(BranchSlotEntry entry)
@@ -398,7 +400,12 @@ namespace ArchipelagoIntegration
                     card.BuyButton.style.display = DisplayStyle.Flex;
                     card.BuyButton.SetEnabled(false);
                     card.SkipButton.style.display = DisplayStyle.None;
-                    card.StatusLabel.text = GetTierRequirementText(next.Slot.Tier);
+                    card.StatusLabel.text = !_saveData.ReceivedItems.Contains("Blueprint: Forester")
+                        ? "Requires: Forester"
+                        : !ApBuildingLocations.HasBuildingPrerequisites(next.Slot.BuildingName,
+                            _saveData.ReceivedItems, ApBuildingLocations.GetFaction())
+                            ? "Requires: Metalsmith"
+                            : GetTierRequirementText(next.Slot.Tier);
                     card.StatusLabel.style.display = DisplayStyle.Flex;
                     card.Container.RemoveFromClassList("ap-shop__path-card--available");
                     card.Container.RemoveFromClassList("ap-shop__path-card--complete");
