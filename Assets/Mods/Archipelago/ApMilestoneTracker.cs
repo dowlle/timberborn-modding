@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Reflection;
 using Newtonsoft.Json.Linq;
 using Timberborn.GameWonderCompletion;
 using Timberborn.HazardousWeatherSystem;
@@ -26,7 +25,8 @@ namespace ArchipelagoIntegration
         private readonly PopulationService _populationService;
         private readonly WellbeingService _wellbeingService;
         private readonly HazardousWeatherHistory _weatherHistory;
-        private readonly GameWonderCompletionService _wonderService;
+        private readonly HazardSurvivalTracker _survival;
+        private readonly WonderCompletionCountdownStarter _wonderCountdown;
         private readonly ResourceCountingService _resourceCountingService;
         private readonly ArchipelagoSaveData _saveData;
 
@@ -45,21 +45,20 @@ namespace ArchipelagoIntegration
 
         // Baselines are stored in ArchipelagoSaveData for persistence across save/load.
 
-        // Cached reflection for wonder completion (runtime enforces access on publicized internals)
-        private MethodInfo _isWonderCompletedMethod;
-
         public ApMilestoneTracker(
             PopulationService populationService,
             WellbeingService wellbeingService,
             HazardousWeatherHistory weatherHistory,
-            GameWonderCompletionService wonderService,
+            HazardSurvivalTracker survival,
+            WonderCompletionCountdownStarter wonderCountdown,
             ResourceCountingService resourceCountingService,
             ArchipelagoSaveData saveData)
         {
             _populationService = populationService;
             _wellbeingService = wellbeingService;
             _weatherHistory = weatherHistory;
-            _wonderService = wonderService;
+            _survival = survival;
+            _wonderCountdown = wonderCountdown;
             _resourceCountingService = resourceCountingService;
             _saveData = saveData;
         }
@@ -89,8 +88,8 @@ namespace ArchipelagoIntegration
             _checkedMilestoneIds = new HashSet<long>(_saveData.CheckedMilestoneIds);
             _warnedResourceMilestoneIds.Clear();
 
-            // Snapshot current hazardous weather counts so survival milestones
-            // only fire for events the player lives through during this AP session.
+            // Snapshot the game's rolled hazard counts. Survival now counts ended hazards
+            // (HazardSurvivalTracker); the baselines stay for saves from older versions.
             if (_saveData.BaselineDroughtCount < 0)
                 _saveData.BaselineDroughtCount = _weatherHistory.GetCyclesCount("DroughtWeather");
             if (_saveData.BaselineBadtideCount < 0)
@@ -181,41 +180,22 @@ namespace ArchipelagoIntegration
 
         private bool EvaluateSurvival(MilestoneDefinition m)
         {
-            // HazardousWeatherId values are "DroughtWeather" and "BadtideWeather"
-            // (matching the class names, not the short display names).
-            // Subtract the baseline so we only count events survived during this AP session.
+            // Hazards count when they end, and only while this save is bound to the slot.
             if (m.Name.Contains("Drought"))
-            {
-                int survived = _weatherHistory.GetCyclesCount("DroughtWeather") - _saveData.BaselineDroughtCount;
-                return survived >= m.Threshold;
-            }
+                return _survival.SurvivedDroughts >= m.Threshold;
 
             if (m.Name.Contains("Badtide"))
-            {
-                int survived = _weatherHistory.GetCyclesCount("BadtideWeather") - _saveData.BaselineBadtideCount;
-                return survived >= m.Threshold;
-            }
+                return _survival.SurvivedBadtides >= m.Threshold;
 
             return false;
         }
 
         private bool EvaluateWonder(MilestoneDefinition m)
         {
-            // Runtime enforces access on publicized internal methods — must use reflection
-            if (_isWonderCompletedMethod == null)
-            {
-                _isWonderCompletedMethod = _wonderService.GetType().GetMethod(
-                    "IsWonderCompletedWithCurrentFaction",
-                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-
-                if (_isWonderCompletedMethod == null)
-                {
-                    Debug.LogWarning("[Archipelago] Could not find IsWonderCompletedWithCurrentFaction method");
-                    return false;
-                }
-            }
-
-            return (bool)_isWonderCompletedMethod.Invoke(_wonderService, null);
+            // CountdownFinished is saved per game. The game's own "completed with this
+            // faction" check reads the player profile per map, so it is also true for a
+            // wonder finished in an earlier game on the same map.
+            return _wonderCountdown.CountdownFinished;
         }
 
         private bool EvaluateResource(MilestoneDefinition m)

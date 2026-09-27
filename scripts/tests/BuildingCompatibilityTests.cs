@@ -20,6 +20,14 @@ public static class BuildingCompatibilityTests
         Check(!ApBuildingLocations.IsTierUnlocked(2, received), "Forester cannot be skipped");
         received.Add("Blueprint: Forester");
         Check(ApBuildingLocations.IsTierUnlocked(2, received), "Gear production should unlock tier 2");
+        // Tier 5 mirrors Rules.tier_blueprints: Folktails bots need Biofuel from the Refinery.
+        Check(ApBuildingLocations.GetTierBlueprints(5, "Folktails").Contains("Refinery"), "FT tier 5 needs Refinery");
+        Check(!ApBuildingLocations.GetTierBlueprints(5, "IronTeeth").Contains("Refinery"), "IT tier 5 has no Refinery");
+        var tier5 = new HashSet<string>(ApBuildingLocations.GetTierBlueprints(5, "Folktails").Select(b => "Blueprint: " + b));
+        tier5.Remove("Blueprint: Refinery");
+        Check(!ApBuildingLocations.IsTierUnlocked(5, tier5, "Folktails"), "FT tier 5 stays locked without Refinery");
+        tier5.Add("Blueprint: Refinery");
+        Check(ApBuildingLocations.IsTierUnlocked(5, tier5, "Folktails"), "FT tier 5 opens with Refinery");
         Check(!ApBuildingLocations.HasBuildingPrerequisites("Dance Pit", received, "IronTeeth"), "Dance Pit needs Metalsmith");
         Check(ApBuildingLocations.HasBuildingPrerequisites("Arch of Progress", received, "IronTeeth"), "Other buildings do not inherit Dance Pit's gate");
         received.Add("Blueprint: Metalsmith");

@@ -21,6 +21,9 @@ namespace ArchipelagoIntegration
             Bind<ArchipelagoSaveData>().AsSingleton();
             Bind<ApEventLogPanel>().AsSingleton();
 
+            // Survived droughts and badtides, counted when each hazard ends
+            Bind<HazardSurvivalTracker>().AsSingleton();
+
             // Milestone tracking (population, wellbeing, survival, wonder)
             Bind<ApMilestoneTracker>().AsSingleton();
 

@@ -437,9 +437,11 @@ namespace ArchipelagoIntegration
                         && receivedItems.Contains("Blueprint: Tapper's Shack")
                         && receivedItems.Contains("Blueprint: Wood Workshop");
                 case ApTier.Tier5:
+                    // Folktails Bot Chassis costs Biofuel, which only the Refinery makes.
                     return IsTierUnlocked(ApTier.Tier4, receivedItems, faction)
                         && receivedItems.Contains("Blueprint: Bot Part Factory")
-                        && receivedItems.Contains("Blueprint: Bot Assembler");
+                        && receivedItems.Contains("Blueprint: Bot Assembler")
+                        && (faction == "IronTeeth" || receivedItems.Contains("Blueprint: Refinery"));
                 default:
                     return false;
             }
@@ -507,7 +509,11 @@ namespace ArchipelagoIntegration
                 required.Add("Smelter");
             }
             if (tier >= 4) required.AddRange(new[] { "Tapper's Shack", "Wood Workshop" });
-            if (tier >= 5) required.AddRange(new[] { "Bot Part Factory", "Bot Assembler" });
+            if (tier >= 5)
+            {
+                required.AddRange(new[] { "Bot Part Factory", "Bot Assembler" });
+                if (faction != "IronTeeth") required.Add("Refinery");
+            }
             return required;
         }
 

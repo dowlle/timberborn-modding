@@ -58,6 +58,8 @@ namespace ArchipelagoIntegration
         private static readonly PropertyKey<string> ScoutedPathsKey = new("ScoutedPaths");
         private static readonly PropertyKey<int> BaselineDroughtKey = new("BaselineDroughtCount");
         private static readonly PropertyKey<int> BaselineBadtideKey = new("BaselineBadtideCount");
+        private static readonly PropertyKey<int> SurvivedDroughtsKey = new("SurvivedDroughts");
+        private static readonly PropertyKey<int> SurvivedBadtidesKey = new("SurvivedBadtides");
         private static readonly PropertyKey<string> ShopPlacementsKey = new("ShopPlacements");
         private static readonly PropertyKey<string> PendingGoodsKey = new("PendingGoods");
         private static readonly PropertyKey<int> GoodsDeliveryKey = new("GoodsDelivery");
@@ -128,6 +130,13 @@ namespace ArchipelagoIntegration
         /// <summary>Baseline hazardous weather counts at AP session start (-1 = not yet set).</summary>
         public int BaselineDroughtCount { get; set; } = -1;
         public int BaselineBadtideCount { get; set; } = -1;
+
+        /// <summary>
+        /// Droughts and badtides that ended while this save was bound to a slot
+        /// (-1 = not counting yet). Kept by HazardSurvivalTracker.
+        /// </summary>
+        public int SurvivedDroughts { get; set; } = HazardSurvival.NotTracking;
+        public int SurvivedBadtides { get; set; } = HazardSurvival.NotTracking;
 
         /// <summary>
         /// Progressive item chains from slot_data.
@@ -314,6 +323,10 @@ namespace ArchipelagoIntegration
                 BaselineDroughtCount = loader.Get(BaselineDroughtKey);
             if (loader.Has(BaselineBadtideKey))
                 BaselineBadtideCount = loader.Get(BaselineBadtideKey);
+            if (loader.Has(SurvivedDroughtsKey))
+                SurvivedDroughts = loader.Get(SurvivedDroughtsKey);
+            if (loader.Has(SurvivedBadtidesKey))
+                SurvivedBadtides = loader.Get(SurvivedBadtidesKey);
 
             // Restore progressive chains and counters
             if (loader.Has(ProgressiveChainsKey))
@@ -507,6 +520,13 @@ namespace ArchipelagoIntegration
                 GoalAchieved = true;
                 Debug.Log("[Archipelago] Goal already completed on server — restored");
             }
+            else if (GoalAchieved && !ArchipelagoManager.IsGoalCompleted())
+            {
+                // The goal was reached, but the send failed and the game closed before
+                // the in-memory retry ran. Send it again now.
+                Debug.Log("[Archipelago] Goal reached in this save but not on the server — sending it again");
+                ArchipelagoManager.SendGoalCompleted();
+            }
         }
 
         /// <summary>
@@ -643,6 +663,10 @@ namespace ArchipelagoIntegration
                 saver.Set(BaselineDroughtKey, BaselineDroughtCount);
             if (BaselineBadtideCount >= 0)
                 saver.Set(BaselineBadtideKey, BaselineBadtideCount);
+            if (SurvivedDroughts >= 0)
+                saver.Set(SurvivedDroughtsKey, SurvivedDroughts);
+            if (SurvivedBadtides >= 0)
+                saver.Set(SurvivedBadtidesKey, SurvivedBadtides);
 
             // Persist progressive chains and counters
             if (ProgressiveChains.Count > 0)
