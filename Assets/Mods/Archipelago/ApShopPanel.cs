@@ -159,6 +159,9 @@ namespace ArchipelagoIntegration
             _saveData.PendingGoods.Changed -= UpdatePendingGoodsLabel;
         }
 
+        /// <summary>Root of the game's UI tree (the shop is reparented there in Load).</summary>
+        internal VisualElement VisualTreeRoot => _root?.panel?.visualTree;
+
         public void Show()
         {
             _root.style.display = DisplayStyle.Flex;
@@ -320,9 +323,15 @@ namespace ArchipelagoIntegration
             return true;
         }
 
-        private static string GetTierRequirementText(int tier)
+        /// <summary>What the slot still needs; never reveals the item it holds.</summary>
+        private string GetLockReason(BranchSlotEntry entry)
         {
-            return ApBuildingLocations.GetTierRequirementText(tier, ApBuildingLocations.GetFaction());
+            bool previousChecked = entry.Index == 0
+                || IsBranchSlotChecked(_pathSlots[entry.Path][entry.Index - 1]);
+            return ApBuildingLocations.DescribeShopLock(
+                entry.Slot.Tier, entry.Slot.BuildingName, entry.Index == 0, previousChecked,
+                entry.Slot.Price, _scienceService.SciencePoints, _saveData.ReceivedItems,
+                ApBuildingLocations.GetFaction());
         }
 
         // =================================================================
@@ -412,12 +421,7 @@ namespace ArchipelagoIntegration
                     card.BuyButton.style.display = DisplayStyle.Flex;
                     card.BuyButton.SetEnabled(false);
                     card.SkipButton.style.display = DisplayStyle.None;
-                    card.StatusLabel.text = !_saveData.ReceivedItems.Contains("Blueprint: Forester")
-                        ? "Requires: Forester"
-                        : !ApBuildingLocations.HasBuildingPrerequisites(next.Slot.BuildingName,
-                            _saveData.ReceivedItems, ApBuildingLocations.GetFaction())
-                            ? "Requires: Metalsmith"
-                            : GetTierRequirementText(next.Slot.Tier);
+                    card.StatusLabel.text = GetLockReason(next);
                     card.StatusLabel.style.display = DisplayStyle.Flex;
                     card.Container.RemoveFromClassList("ap-shop__path-card--available");
                     card.Container.RemoveFromClassList("ap-shop__path-card--complete");
@@ -439,7 +443,9 @@ namespace ArchipelagoIntegration
                     card.SkipButton.style.display = (_saveData.SkipsAvailable > 0)
                         ? DisplayStyle.Flex : DisplayStyle.None;
                     card.SkipButton.SetEnabled(connected);
-                    card.StatusLabel.style.display = DisplayStyle.None;
+                    // Only science can be missing here: "Needs: 120 science".
+                    card.StatusLabel.text = canAfford ? "" : GetLockReason(next);
+                    card.StatusLabel.style.display = canAfford ? DisplayStyle.None : DisplayStyle.Flex;
                     card.Container.RemoveFromClassList("ap-shop__path-card--locked");
                     card.Container.RemoveFromClassList("ap-shop__path-card--complete");
                     card.Container.AddToClassList("ap-shop__path-card--available");

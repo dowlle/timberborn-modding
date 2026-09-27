@@ -84,6 +84,18 @@ public static class ItemReplayTrackerTests
         var resync = new Session().Begin(true).Connected().Items(2).Items(2);
         Check(!resync.Replays[2] && !resync.Replays[3], "in-session resync items are live");
 
+        // Starting items: a new colony's connect history begins with the start inventory
+        // (location -2). They replay as unlocks, never skipped; only traps and Skips are.
+        var start = new Session().Begin(true).Connected().Items(3).Other().Items(1);
+        Check(start.Replays[0] && start.Replays[1] && start.Replays[2], "start inventory is part of the history");
+        foreach (var name in new[] { "Blueprint: Forester", "Blueprint: Stairs", "Blueprint: Platform",
+                                     "Progressive Platforms", "Package: Logs", "Boost: Faster Working Speed",
+                                     "Scout: Path A" })
+            Check(!ItemReplayTracker.SkipsOnReplay(name), name + " is applied on replay");
+        Check(ItemReplayTracker.SkipsOnReplay("Skip"), "Skip is not replayed");
+        Check(ItemReplayTracker.SkipsOnReplay("Trap: Hazardous Weather"), "traps are not replayed");
+        Check(!ItemReplayTracker.SkipsOnReplay(null), "null name is not a trap");
+
         Console.WriteLine("ItemReplayTrackerTests passed");
         return 0;
     }

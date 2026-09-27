@@ -15,6 +15,8 @@ namespace ArchipelagoIntegration
             Bind<ApItemReceiver>().AsSingleton();
             Bind<BuildingUnlockToolRefresher>().AsSingleton();
             Bind<VanillaUnlockBlocker>().AsSingleton();
+            // AP logo instead of the blocked "2147M" unlock cost (#21)
+            Bind<ApUnlockCostDisplay>().AsSingleton();
             Bind<ArchipelagoConnectPanel>().AsSingleton();
             Bind<ArchipelagoSaveData>().AsSingleton();
             Bind<ApEventLogPanel>().AsSingleton();

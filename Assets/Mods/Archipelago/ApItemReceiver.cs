@@ -107,7 +107,7 @@ namespace ArchipelagoIntegration
             // Handle Skip items — lost on restart (not idempotent)
             if (item.ItemName == "Skip")
             {
-                if (item.IsReplay)
+                if (item.IsReplay && ItemReplayTracker.SkipsOnReplay(item.ItemName))
                 {
                     Debug.Log($"[Archipelago] Skipping replay Skip item (index {item.ItemIndex})");
                     return;
@@ -189,7 +189,7 @@ namespace ArchipelagoIntegration
                 // this save has handled from reaching here, so a new game gets every
                 // received resource back and a reload never adds the same item twice.
                 // Boosts are handled idempotently by ApEffectHandler via ActiveBoosts check
-                if (item.IsReplay && item.ItemName.StartsWith("Trap: "))
+                if (item.IsReplay && ItemReplayTracker.SkipsOnReplay(item.ItemName))
                 {
                     Debug.Log($"[Archipelago] Skipping replay {item.ItemName} (index {item.ItemIndex})");
                     return;

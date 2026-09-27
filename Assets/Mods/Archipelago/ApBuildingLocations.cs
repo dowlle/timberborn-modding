@@ -449,10 +449,90 @@ namespace ArchipelagoIntegration
         // Building requirements beyond the slot tier. Mirrors Rules.py.
         // -----------------------------------------------------------------
 
+        // Buildings that use Explosives or Extract (Rules.py EXPLOSIVES_CONSUMERS and
+        // EXTRACT_CONSUMERS) need the good's production chain, badwater source included.
+        private static readonly HashSet<string> ExplosivesConsumers = new()
+        {
+            "Dynamite", "Double Dynamite", "Triple Dynamite", "Tunnel", "Detonator",
+        };
+
+        private static readonly HashSet<string> ExtractConsumers = new()
+        {
+            "Double Dynamite", "Triple Dynamite", "Tunnel", "Detonator", "Memory",
+            "Pole Banner", "Square Banner", "Agora", "Detailer",
+            "Decontamination Pod", "Advanced Breeding Pod", "Grease Factory",
+        };
+
+        // Rules.py RESOURCE_CHAINS["Badwater"] per faction: the source and the
+        // metal chain its construction needs.
+        private static readonly string[] FolktailsBadwater =
+            { "Badwater Pump", "Gear Workshop", "Forester", "Smelter", "Scavenger Flag" };
+        private static readonly string[] IronTeethBadwater =
+            { "Metalsmith", "Deep Badwater Pump", "Gear Workshop", "Forester", "Smelter" };
+
+        /// <summary>Blueprints a building needs beyond its slot tier (mirrors building_prerequisite_blueprints).</summary>
+        public static List<string> GetBuildingPrerequisites(string buildingName, string faction = "Folktails")
+        {
+            var required = new List<string>();
+            bool ironTeeth = faction == "IronTeeth";
+            var badwater = ironTeeth ? IronTeethBadwater : FolktailsBadwater;
+            if (ExplosivesConsumers.Contains(buildingName))
+            {
+                required.AddRange(badwater);
+                required.Add("Explosives Factory");
+            }
+            if (ExtractConsumers.Contains(buildingName))
+            {
+                required.AddRange(badwater);
+                required.Add("Centrifuge");
+            }
+            if (buildingName == "Dance Pit" && ironTeeth)
+                required.Add("Metalsmith");
+            return required.Distinct().ToList();
+        }
+
         public static bool HasBuildingPrerequisites(string buildingName, HashSet<string> receivedItems,
                                                     string faction = "Folktails")
-            => buildingName != "Dance Pit" || faction != "IronTeeth"
-                || receivedItems.Contains("Blueprint: Metalsmith");
+            => GetBuildingPrerequisites(buildingName, faction)
+                .All(b => receivedItems.Contains("Blueprint: " + b));
+
+        /// <summary>Blueprints a slot tier needs, lowest tier first (mirrors IsTierUnlocked).</summary>
+        public static List<string> GetTierBlueprints(int tier, string faction = "Folktails")
+        {
+            var required = new List<string>();
+            if (tier >= 2) required.AddRange(new[] { "Forester", "Gear Workshop" });
+            if (tier >= 3)
+            {
+                if (faction != "IronTeeth") required.Add("Scavenger Flag");
+                required.Add("Smelter");
+            }
+            if (tier >= 4) required.AddRange(new[] { "Tapper's Shack", "Wood Workshop" });
+            if (tier >= 5) required.AddRange(new[] { "Bot Part Factory", "Bot Assembler" });
+            return required;
+        }
+
+        /// <summary>
+        /// Why a shop slot cannot be bought yet, as "Needs: previous check, Smelter,
+        /// 120 science", or "" when nothing is missing. Lists only what the slot
+        /// requires (previous check, Forester after the first slot, tier and building
+        /// prerequisites, science), never what the slot contains.
+        /// </summary>
+        public static string DescribeShopLock(int tier, string buildingName, bool firstInPath,
+                                              bool previousChecked, int price, int sciencePoints,
+                                              HashSet<string> receivedItems, string faction = "Folktails")
+        {
+            var needs = new List<string>();
+            if (!firstInPath && !previousChecked)
+                needs.Add("previous check");
+            var blueprints = new List<string>();
+            if (!firstInPath) blueprints.Add("Forester");
+            blueprints.AddRange(GetTierBlueprints(tier, faction));
+            blueprints.AddRange(GetBuildingPrerequisites(buildingName, faction));
+            needs.AddRange(blueprints.Distinct().Where(b => !receivedItems.Contains("Blueprint: " + b)));
+            if (sciencePoints < price)
+                needs.Add(price + " science");
+            return needs.Count == 0 ? "" : "Needs: " + string.Join(", ", needs);
+        }
 
         // -----------------------------------------------------------------
         // Faction helper
@@ -544,24 +624,5 @@ namespace ArchipelagoIntegration
         /// </summary>
         public static IEnumerable<KeyValuePair<string, string>> AllEntries
             => TemplateToBuilding;
-
-        /// <summary>
-        /// Returns the tier requirement text for the given tier and faction.
-        /// IT Tier 3 does not require Scavenger Flag (scrap gathering is free).
-        /// </summary>
-        public static string GetTierRequirementText(int tier, string faction = "Folktails")
-        {
-            switch (tier)
-            {
-                case 2: return "Requires: Forester + Gear Workshop";
-                case 3:
-                    return faction == "IronTeeth"
-                        ? "Requires: Smelter"
-                        : "Requires: Scavenger Flag + Smelter";
-                case 4: return "Requires: Tapper's Shack + Wood Workshop";
-                case 5: return "Requires: Bot Part Factory + Bot Assembler";
-                default: return "";
-            }
-        }
     }
 }

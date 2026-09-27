@@ -39,6 +39,18 @@ namespace ArchipelagoIntegration
             return processedItemIndex == 0 && (!boundToSlot || healedOrphanedIndex);
         }
 
+        /// <summary>
+        /// True for items whose replay must not be applied again: traps (unfair on a
+        /// fresh start) and Skips (a Skip spent in an earlier colony stays spent).
+        /// Everything else, blueprints and starting items above all, is idempotent or
+        /// needed and is applied on replay: the connect-time history of a new colony
+        /// starts with the slot's starting inventory (Forester, Stairs, Platform).
+        /// </summary>
+        public static bool SkipsOnReplay(string itemName)
+        {
+            return itemName == "Skip" || (itemName != null && itemName.StartsWith("Trap: "));
+        }
+
         /// <summary>Call before login, on the main thread.</summary>
         public void BeginSession(bool replayHistory)
         {
