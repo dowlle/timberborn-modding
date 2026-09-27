@@ -3,11 +3,13 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using Timberborn.BonusSystem;
+using Timberborn.Effects;
 using Timberborn.EntitySystem;
 using Timberborn.GameCycleSystem;
 using Timberborn.Goods;
 using Timberborn.HazardousWeatherSystem;
 using Timberborn.InventorySystem;
+using Timberborn.NeedSystem;
 using Timberborn.Population;
 using Timberborn.SingletonSystem;
 using Timberborn.Stockpiles;
@@ -76,13 +78,6 @@ namespace ArchipelagoIntegration
         private Type _bonusManagerType;
         private MethodInfo _addBonusMethod;
         private bool _bonusSystemSearched;
-
-        // NeedManager resolved via reflection
-        private Type _needManagerType;
-        private FieldInfo _allNeedsField;       // NeedManager.<AllNeeds>k__BackingField
-        private PropertyInfo _needIdProperty;   // Need.NeedId
-        private MethodInfo _setPointsMethod;    // Need.SetPoints(float)
-        private bool _needSystemSearched;
 
         // Resource items: package settings parsed from slot_data, cached per slot_data
         // instance. Names and base amounts live in ResourcePackages.
@@ -240,7 +235,9 @@ namespace ArchipelagoIntegration
             int inventories = -1;
             try { inventories = _entityComponentRegistry.GetEnabled<Stockpile>().Count(); }
             catch (Exception ex) { Debug.LogWarning($"[Archipelago] PostLoad stockpile count failed: {ex.Message}"); }
-            int needMgrs = _needManagerType != null ? FindEntityComponents(_needManagerType).Count : -1;
+            int needMgrs = -1;
+            try { needMgrs = _entityComponentRegistry.GetEnabled<NeedManager>().Count(); }
+            catch (Exception ex) { Debug.LogWarning($"[Archipelago] PostLoad NeedManager count failed: {ex.Message}"); }
 
             int beavers = -1, adults = -1, bots = -1;
             try
@@ -276,7 +273,6 @@ namespace ArchipelagoIntegration
         {
             EnsureBaseComponentResolved();
             EnsureBonusSystemResolved();
-            EnsureNeedSystemResolved();
 
             Debug.Log("[Archipelago] Reflection dry-run beginning…");
 
@@ -306,18 +302,16 @@ namespace ArchipelagoIntegration
                 Debug.LogWarning($"[Archipelago] Dry-run FAILED: Stockpile enumeration threw: {ex.Message}");
             }
 
-            // 3) NeedManager lookup (trap pipeline)
-            if (_needManagerType != null)
+            // 3) NeedManager lookup (need traps). NeedManager is an IRegisteredComponent,
+            // so the registry lists it directly.
+            try
             {
-                try
-                {
-                    var nms = FindEntityComponents(_needManagerType);
-                    Debug.Log($"[Archipelago] Dry-run: NeedManager enumerable — {nms.Count} instance(s).");
-                }
-                catch (Exception ex)
-                {
-                    Debug.LogWarning($"[Archipelago] Dry-run FAILED: NeedManager enumeration threw: {ex.Message}");
-                }
+                var nms = _entityComponentRegistry.GetEnabled<NeedManager>().Count();
+                Debug.Log($"[Archipelago] Dry-run: NeedManager enumerable — {nms} instance(s).");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[Archipelago] Dry-run FAILED: NeedManager enumeration threw: {ex.Message}");
             }
 
             Debug.Log("[Archipelago] Reflection dry-run complete.");
@@ -361,10 +355,8 @@ namespace ArchipelagoIntegration
                     TriggerHazardousWeather();
                     break;
                 case "Hungry Beavers":
-                    TriggerHungryBeavers();
-                    break;
                 case "Thirsty Beavers":
-                    TriggerThirstyBeavers();
+                    TriggerNeedTrap(trapName);
                     break;
                 // Legacy trap names kept for backwards compat with any v0.0.2-era
                 // seeds still in circulation; both now route through the generic
@@ -639,122 +631,79 @@ namespace ArchipelagoIntegration
             Debug.Log("[Archipelago] Post-trap cleanup complete, queue drain re-enabled.");
         }
 
-        private void TriggerHungryBeavers()
-        {
-            try
-            {
-                // Set Hunger need to -0.5 (critical state, range is -3.0 to 1.0)
-                int affected = SetNeedOnAllBeavers("Hunger", -0.5f);
-                Debug.Log($"[Archipelago] Hungry Beavers: set hunger to critical on {affected} entities");
-                Debug.Log($"[Archipelago/Trap] HUNGRY_BEAVERS fired: " +
-                          $"affected={affected}, cycle={_gameCycleService.Cycle}, day={_gameCycleService.CycleDay}");
-                ArchipelagoManager.PostLogMessage($"Trap activated: Hungry Beavers! ({affected} beavers affected)");
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning($"[Archipelago] Hungry Beavers trap failed: {ex.Message}");
-                ArchipelagoManager.PostLogMessage("Trap: Hungry Beavers (failed to apply)");
-            }
-        }
-
-        private void TriggerThirstyBeavers()
-        {
-            try
-            {
-                // Set Thirst need to -0.5 (critical state, range is -3.0 to 1.0)
-                int affected = SetNeedOnAllBeavers("Thirst", -0.5f);
-                Debug.Log($"[Archipelago] Thirsty Beavers: set thirst to critical on {affected} entities");
-                Debug.Log($"[Archipelago/Trap] THIRSTY_BEAVERS fired: " +
-                          $"affected={affected}, cycle={_gameCycleService.Cycle}, day={_gameCycleService.CycleDay}");
-                ArchipelagoManager.PostLogMessage($"Trap activated: Thirsty Beavers! ({affected} beavers affected)");
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning($"[Archipelago] Thirsty Beavers trap failed: {ex.Message}");
-                ArchipelagoManager.PostLogMessage("Trap: Thirsty Beavers (failed to apply)");
-            }
-        }
-
         /// <summary>
-        /// Sets a need to a specific point value on all beavers via NeedManager.
+        /// Hungry Beavers / Thirsty Beavers: drops the Hunger or Thirst need of every
+        /// beaver (not bots) to NeedTraps.CriticalPoints. Beavers already at or below
+        /// that level are left alone. The change goes through
+        /// NeedManager.ApplyEffect(InstantEffect), the path the game's own need
+        /// debug buttons use, so the critical-state and minimum-state events fire
+        /// (status icon, work penalties, death tracking) as for a normal change.
+        /// Writes exactly one log line per trap.
         /// </summary>
-        private int SetNeedOnAllBeavers(string needId, float points)
+        private void TriggerNeedTrap(string trapName)
         {
-            EnsureNeedSystemResolved();
-
-            if (_needManagerType == null || _allNeedsField == null ||
-                _needIdProperty == null || _setPointsMethod == null)
+            if (!NeedTraps.TryGetNeedId(trapName, out var needId))
             {
-                Debug.LogWarning("[Archipelago] NeedSystem not fully resolved — cannot set need");
-                return 0;
+                Debug.LogWarning($"[Archipelago] Unknown need trap: {trapName}");
+                return;
             }
 
-            // NeedManager extends BaseComponent but does not implement IRegisteredComponent
-            // (same as BonusManager / Inventory) — use EntityRegistry.Entities + per-entity
-            // GetComponent<T>() instead of EntityComponentRegistry.GetEnabled<T>().
-            var managers = FindEntityComponents(_needManagerType);
-
-            if (managers.Count == 0)
+            var tally = new NeedTraps.Tally();
+            string firstError = null;
+            try
             {
-                Debug.LogWarning("[Archipelago] No NeedManager instances found on entities");
-                return 0;
-            }
-
-            int count = 0;
-            foreach (var manager in managers)
-            {
-                try
+                foreach (var needManager in _entityComponentRegistry.GetEnabled<NeedManager>())
                 {
-                    var allNeeds = _allNeedsField.GetValue(manager);
-                    if (allNeeds == null) continue;
-
-                    foreach (var need in (System.Collections.IEnumerable)allNeeds)
+                    try
                     {
-                        var id = _needIdProperty.GetValue(need) as string;
-                        if (id == needId)
+                        if (!needManager.HasNeed(needId))
                         {
-                            _setPointsMethod.Invoke(need, new object[] { points });
-                            count++;
-                            break;
+                            tally.Skipped++;
+                            continue;
                         }
+
+                        var spec = needManager.GetNeedSpec(needId);
+                        if (!NeedTraps.AppliesTo(true, needManager.NeedIsEnabled(needId), spec.CharacterType))
+                        {
+                            tally.Skipped++;
+                            continue;
+                        }
+
+                        float before = needManager.GetNeedPoints(needId);
+                        if (!NeedTraps.TryPlanDrop(before, spec.MinimumValue, spec.MaximumValue, spec.Effectiveness,
+                                                   out var effectPoints, out _))
+                        {
+                            tally.AlreadyCritical++;
+                            continue;
+                        }
+
+                        var effect = new InstantEffect(needId, effectPoints, 1);
+                        needManager.ApplyEffect(in effect);
+
+                        if (needManager.GetNeedPoints(needId) < before) tally.Lowered++;
+                        else tally.Failed++;
+                    }
+                    catch (Exception ex)
+                    {
+                        tally.Failed++;
+                        firstError ??= ex.Message;
                     }
                 }
-                catch (Exception ex)
-                {
-                    Debug.LogWarning($"[Archipelago] SetNeed('{needId}') failed: {ex.InnerException?.Message ?? ex.Message}");
-                }
             }
-
-            return count;
-        }
-
-        private void EnsureNeedSystemResolved()
-        {
-            if (_needSystemSearched) return;
-            _needSystemSearched = true;
-
-            _needManagerType = FindType("Timberborn.NeedSystem.NeedManager");
-            var needType = FindType("Timberborn.NeedSystem.Need");
-
-            if (_needManagerType != null)
+            catch (Exception ex)
             {
-                // Property getter may fail due to ImmutableArray<> dependency,
-                // so access the auto-property backing field directly.
-                _allNeedsField = _needManagerType.GetField("<AllNeeds>k__BackingField",
-                    BindingFlags.Instance | BindingFlags.NonPublic);
+                firstError ??= ex.Message;
             }
 
-            if (needType != null)
-            {
-                _needIdProperty = needType.GetProperty("NeedId",
-                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                _setPointsMethod = needType.GetMethod("SetPoints",
-                    new[] { typeof(float) });
-            }
+            var tag = trapName.ToUpperInvariant().Replace(' ', '_');
+            Debug.Log($"[Archipelago/Trap] {tag} fired: need={needId}, target={NeedTraps.CriticalPoints}, " +
+                      $"{tally.Describe()}, cycle={_gameCycleService.Cycle}, day={_gameCycleService.CycleDay}" +
+                      (firstError != null ? $", firstError={firstError}" : ""));
 
-            Debug.Log($"[Archipelago] NeedSystem resolved: Manager={_needManagerType != null}, " +
-                      $"AllNeedsField={_allNeedsField != null}, NeedId={_needIdProperty != null}, " +
-                      $"SetPoints={_setPointsMethod != null}");
+            if (tally.Lowered == 0 && firstError != null)
+                ArchipelagoManager.PostLogMessage($"Trap: {trapName} (failed to apply)");
+            else
+                ArchipelagoManager.PostLogMessage($"Trap activated: {trapName}! ({tally.Lowered} beavers affected)");
         }
 
         // =================================================================
