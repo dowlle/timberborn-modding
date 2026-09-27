@@ -27,7 +27,15 @@ namespace ArchipelagoIntegration
         public readonly ItemFlags Flags;
         public readonly int    ItemIndex;
 
-        public ApItem(ItemInfo info, int itemIndex)
+        /// <summary>
+        /// True when this item is a replay of the slot's history on a new colony (it was
+        /// in the server's connect-time item batch and the save had not applied that
+        /// history yet). Fixed on the network thread when the item arrives; see
+        /// ItemReplayTracker. Consumers skip non-idempotent effects (traps, Skips).
+        /// </summary>
+        public readonly bool   IsReplay;
+
+        public ApItem(ItemInfo info, int itemIndex, bool isReplay)
         {
             ItemId       = info.ItemId;
             ItemName     = info.ItemName;
@@ -37,14 +45,8 @@ namespace ArchipelagoIntegration
             SenderSlot   = info.Player?.Slot ?? 0;
             Flags        = info.Flags;
             ItemIndex    = itemIndex;
+            IsReplay     = isReplay;
         }
-
-        /// <summary>
-        /// True when this item is being replayed from server history (e.g. fresh save
-        /// connecting to an existing AP slot). Consumers should skip non-idempotent
-        /// effects (filler, traps, skips) for replay items.
-        /// </summary>
-        public bool IsReplay => ItemIndex < ArchipelagoManager.ReplayBoundary;
     }
 
     /// <summary>
@@ -87,10 +89,13 @@ namespace ArchipelagoIntegration
         public static event Action<ApLogEntry> OnLogMessage;
 
         /// <summary>
-        /// Items with ItemIndex below this value are replays from server history.
-        /// Set on connect from session.Items.AllItemsReceived.Count.
+        /// True while the loaded save has not applied its slot's item history yet (new
+        /// colony). The next successful connect replays that history (traps and Skips
+        /// skipped) and clears this. Set by ArchipelagoSaveData.Load.
         /// </summary>
-        public static int ReplayBoundary { get; private set; }
+        public static bool ReplayHistoryOnNextConnect { get; set; }
+
+        private static readonly ItemReplayTracker _replayTracker = new();
 
         // ------------------------------------------------------------------ internals
         private static ArchipelagoSession _session;
@@ -123,6 +128,11 @@ namespace ArchipelagoIntegration
             _session.Items.ItemReceived  += OnNetworkItemReceived;
             _session.Socket.SocketClosed += OnSocketClosed;
             _session.MessageLog.OnMessageReceived += OnServerMessageReceived;
+            // Subscribed after CreateSession, so it runs after ReceivedItemsHelper has
+            // handled the same packet. The history batch is handled on the socket thread
+            // while TryConnectAndLogin returns, so the flag must be set before login.
+            _session.Socket.PacketReceived += OnSocketPacketReceived;
+            _replayTracker.BeginSession(ReplayHistoryOnNextConnect);
 
             var loginResult = _session.TryConnectAndLogin(
                 "Timberborn",
@@ -141,14 +151,12 @@ namespace ArchipelagoIntegration
                 CurrentSeed  = _session.RoomState.Seed;
                 SlotData     = success.SlotData;
 
-                // Items with index < this boundary are replays from server history.
-                // By the time TryConnectAndLogin returns, the initial item batch has
-                // already been delivered through OnNetworkItemReceived and queued in
-                // _pendingItems with their original indices. HandleItem (main thread)
-                // will compare each item's index against this boundary.
-                ReplayBoundary = _session.Items.AllItemsReceived.Count;
+                // The history batch belongs to this connect only; later connects of the
+                // same save (reconnects) apply everything past ProcessedItemIndex as new.
+                bool replaysHistory = _replayTracker.ReplaysHistory;
+                ReplayHistoryOnNextConnect = false;
 
-                Debug.Log($"[Archipelago] Connected to {host}:{port} as '{slotName}'. Seed: {CurrentSeed}, ReplayBoundary: {ReplayBoundary}");
+                Debug.Log($"[Archipelago] Connected to {host}:{port} as '{slotName}'. Seed: {CurrentSeed}, ProcessedItemIndex: {ProcessedItemIndex}, ReplayHistory: {replaysHistory}");
                 Debug.Log($"[Archipelago] SlotData keys: {string.Join(", ", SlotData.Keys)}");
                 _pendingMessages.Enqueue(ApLogEntry.Plain($"Connected to {host}:{port} as '{slotName}'"));
                 OnConnectionChanged?.Invoke(true, $"Connected as {slotName}");
@@ -159,6 +167,8 @@ namespace ArchipelagoIntegration
                 var reasons = string.Join(", ", failure.Errors);
                 Debug.LogWarning($"[Archipelago] Connection failed: {reasons}");
                 OnConnectionChanged?.Invoke(false, $"Failed: {reasons}");
+                _replayTracker.EndSession();
+                _session.Socket.PacketReceived -= OnSocketPacketReceived;
                 _session = null;
             }
 
@@ -178,6 +188,7 @@ namespace ArchipelagoIntegration
             _session.Items.ItemReceived  -= OnNetworkItemReceived;
             _session.Socket.SocketClosed -= OnSocketClosed;
             _session.MessageLog.OnMessageReceived -= OnServerMessageReceived;
+            _session.Socket.PacketReceived -= OnSocketPacketReceived;
 
             try { _session.Socket.DisconnectAsync().Wait(1000); }
             catch { /* best-effort */ }
@@ -187,7 +198,7 @@ namespace ArchipelagoIntegration
             CurrentSlot  = null;
             CurrentSeed  = null;
             SlotData     = null;
-            ReplayBoundary = 0;
+            _replayTracker.EndSession();
 
             // Drain queues tied to the dying session so a Disconnect→Reconnect
             // cycle doesn't replay items/messages from the old socket. The new
@@ -213,6 +224,7 @@ namespace ArchipelagoIntegration
         public static void ResetSessionState()
         {
             ProcessedItemIndex = 0;
+            ReplayHistoryOnNextConnect = false;
             ConnectionBlocked = false;
         }
 
@@ -452,8 +464,20 @@ namespace ArchipelagoIntegration
                 if (index < ProcessedItemIndex)
                     continue;
 
-                _pendingItems.Enqueue(new ApItem(info, index));
+                _pendingItems.Enqueue(new ApItem(info, index, _replayTracker.ClassifyItem()));
             }
+        }
+
+        private static void OnSocketPacketReceived(ArchipelagoPacketBase packet)
+        {
+            if (packet is ReceivedItemsPacket items && _replayTracker.InHistoryBatch)
+            {
+                Debug.Log($"[Archipelago] Connect history: {items.Items?.Length ?? 0} item(s) from index {items.Index}, " +
+                          (_replayTracker.ReplaysHistory
+                              ? "replayed on this new colony (traps and Skips skipped)"
+                              : $"items from ProcessedItemIndex {ProcessedItemIndex} applied as new"));
+            }
+            _replayTracker.AfterPacket(packet is ConnectedPacket);
         }
 
         private static void OnServerMessageReceived(LogMessage message)

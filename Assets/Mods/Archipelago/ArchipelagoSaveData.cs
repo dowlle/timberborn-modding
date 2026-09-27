@@ -222,6 +222,8 @@ namespace ArchipelagoIntegration
                 // (and any future static AP state) leaks across save loads and causes
                 // items to be silently skipped in the new slot.
                 ArchipelagoManager.ProcessedItemIndex = 0;
+                // New colony: its first connect replays the slot's item history.
+                ArchipelagoManager.ReplayHistoryOnNextConnect = true;
                 return;
             }
 
@@ -236,7 +238,8 @@ namespace ArchipelagoIntegration
             // are empty on broken saves, so replay is idempotent.
             bool hasReceivedItems = loader.Has(ReceivedItemsKey)
                 && !string.IsNullOrEmpty(loader.Get(ReceivedItemsKey));
-            if (savedIndex > 0 && !hasReceivedItems)
+            bool healedOrphanedIndex = savedIndex > 0 && !hasReceivedItems;
+            if (healedOrphanedIndex)
             {
                 Debug.LogWarning($"[Archipelago] Detected orphaned ProcessedItemIndex={savedIndex} with no applied items in save (likely from a pre-fix carryover bug). Resetting to 0 so the item history replays correctly.");
                 savedIndex = 0;
@@ -252,6 +255,12 @@ namespace ArchipelagoIntegration
                 _savedSlot = loader.Get(SlotKey);
             if (loader.Has(SeedKey))
                 _savedSeed = loader.Get(SeedKey);
+
+            // A save that never connected (or was healed above) replays the slot's
+            // history on its first connect. A save bound to a slot applies everything
+            // past ProcessedItemIndex as new items, so nothing is replayed twice.
+            ArchipelagoManager.ReplayHistoryOnNextConnect = ItemReplayTracker.IsFreshSave(
+                savedIndex, !string.IsNullOrEmpty(_savedSlot), healedOrphanedIndex);
 
             // Restore shop state
             if (loader.Has(CheckedLocsKey))
