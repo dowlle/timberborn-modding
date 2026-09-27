@@ -5,12 +5,14 @@ using System.Reflection;
 using Timberborn.BonusSystem;
 using Timberborn.Effects;
 using Timberborn.EntitySystem;
+using Timberborn.GameDistricts;
 using Timberborn.GameCycleSystem;
 using Timberborn.Goods;
 using Timberborn.HazardousWeatherSystem;
 using Timberborn.InventorySystem;
 using Timberborn.NeedSystem;
 using Timberborn.Population;
+using Timberborn.SimpleOutputBuildings;
 using Timberborn.SingletonSystem;
 using Timberborn.Stockpiles;
 using Timberborn.WeatherSystem;
@@ -33,6 +35,7 @@ namespace ArchipelagoIntegration
         private readonly GameCycleService _gameCycleService;
         private readonly EntityComponentRegistry _entityComponentRegistry;
         private readonly EntityRegistry _entityRegistry;
+        private readonly DistrictCenterRegistry _districtCenterRegistry;
         private readonly BonusTypeSpecService _bonusTypeSpecService;
         private readonly PopulationService _populationService;
         private readonly ArchipelagoSaveData _saveData;
@@ -66,11 +69,20 @@ namespace ArchipelagoIntegration
         private bool _trapScheduledAwaitingTransition;
 
         // Filler delivery: received goods wait in ArchipelagoSaveData.PendingGoods and
-        // a periodic pass moves what fits into finished stockpiles. Stockpile is the
-        // only inventory owner with PublicInput, and it enables its inventory only
-        // in the finished state, so construction sites, carry slots and workshop
-        // buffers are never candidates.
+        // a periodic pass moves them out. The goods_delivery option (slot_data, saved in
+        // ArchipelagoSaveData.DeliveryMode) picks the target:
+        // - District Center (default): the District Center's output inventory, the same
+        //   inventory and call the game uses for starting berries and water
+        //   (StartingGoodsProvider -> GiveExistingIgnoringCapacity). Its workers haul the
+        //   goods to storage, builders can take them, and beavers eat and drink from it.
+        //   Goods it does not take go to stockpiles.
+        // - Storage: only what fits into finished stockpiles. Stockpile is the only
+        //   inventory owner with PublicInput, and it enables its inventory only in the
+        //   finished state, so construction sites, carry slots and workshop buffers are
+        //   never candidates.
+        // In both modes, goods that find no room stay pending for the next pass.
         private const float DeliveryIntervalSeconds = 3f;
+        private GoodsDeliveryMode? _lastDeliveryMode;
         private float _nextDeliveryTime;
         private string _lastPendingSummary;
 
@@ -104,6 +116,7 @@ namespace ArchipelagoIntegration
             GameCycleService gameCycleService,
             EntityComponentRegistry entityComponentRegistry,
             EntityRegistry entityRegistry,
+            DistrictCenterRegistry districtCenterRegistry,
             BonusTypeSpecService bonusTypeSpecService,
             PopulationService populationService,
             ArchipelagoSaveData saveData,
@@ -115,6 +128,7 @@ namespace ArchipelagoIntegration
             _gameCycleService = gameCycleService;
             _entityComponentRegistry = entityComponentRegistry;
             _entityRegistry = entityRegistry;
+            _districtCenterRegistry = districtCenterRegistry;
             _bonusTypeSpecService = bonusTypeSpecService;
             _populationService = populationService;
             _saveData = saveData;
@@ -797,13 +811,27 @@ namespace ArchipelagoIntegration
             if (Time.unscaledTime < _nextDeliveryTime) return;
             _nextDeliveryTime = Time.unscaledTime + DeliveryIntervalSeconds;
 
+            var deliveryMode = _saveData.DeliveryMode;
+            bool districtCenterFirst = deliveryMode == GoodsDeliveryMode.DistrictCenter;
+            if (_lastDeliveryMode != deliveryMode)
+            {
+                _lastDeliveryMode = deliveryMode;
+                Debug.Log($"[Archipelago] Delivery mode: {GoodsDeliveryOption.Describe(deliveryMode)} (goods_delivery)");
+            }
+
             List<IGoodsStorageSlot> slots;
+            DistrictCenterStorageSlot districtCenterSlot = null;
             try
             {
-                slots = _entityComponentRegistry.GetEnabled<Stockpile>()
+                slots = new List<IGoodsStorageSlot>();
+                if (districtCenterFirst)
+                {
+                    districtCenterSlot = FindDeliveryDistrictCenter();
+                    if (districtCenterSlot != null) slots.Add(districtCenterSlot);
+                }
+                slots.AddRange(_entityComponentRegistry.GetEnabled<Stockpile>()
                     .Where(stockpile => stockpile.Inventory != null)
-                    .Select(stockpile => (IGoodsStorageSlot)new StockpileStorageSlot(stockpile.Inventory))
-                    .ToList();
+                    .Select(stockpile => (IGoodsStorageSlot)new StockpileStorageSlot(stockpile.Inventory)));
             }
             catch (Exception ex)
             {
@@ -812,24 +840,69 @@ namespace ArchipelagoIntegration
             }
 
             var result = ledger.Deliver(slots, (slot, goodId, amount) =>
-                ((StockpileStorageSlot)slot).Inventory.GiveExisting(new GoodAmount(goodId, amount)));
+            {
+                if (slot is DistrictCenterStorageSlot districtCenter)
+                    districtCenter.Inventory.GiveExistingIgnoringCapacity(new GoodAmount(goodId, amount));
+                else
+                    ((StockpileStorageSlot)slot).Inventory.GiveExisting(new GoodAmount(goodId, amount));
+            });
 
-            foreach (var delivered in result.Delivered.GroupBy(d => d.GoodId))
+            foreach (var delivered in result.Delivered.GroupBy(d => (d.GoodId, ToDistrictCenter: d.Slot is DistrictCenterStorageSlot)))
             {
                 int total = delivered.Sum(d => d.Amount);
-                Debug.Log($"[Archipelago] Delivered {total} {delivered.Key} into " +
-                          $"{delivered.Count()} storage building(s); still waiting: {ledger.Get(delivered.Key)}");
-                ArchipelagoManager.PostLogMessage($"Delivered {total} {GoodDisplayName(delivered.Key)} to storage");
+                string goodId = delivered.Key.GoodId;
+                if (delivered.Key.ToDistrictCenter)
+                {
+                    var name = ((DistrictCenterStorageSlot)delivered.First().Slot).Name;
+                    Debug.Log($"[Archipelago] Delivery path=DistrictCenter: {total} {goodId} into '{name}' " +
+                              $"(now holds {districtCenterSlot?.Inventory.AmountInStock(goodId)}); still waiting: {ledger.Get(goodId)}");
+                    ArchipelagoManager.PostLogMessage($"Delivered {total} {GoodDisplayName(goodId)} to the District Center");
+                }
+                else
+                {
+                    Debug.Log($"[Archipelago] Delivery path=Stockpile: {total} {goodId} into " +
+                              $"{delivered.Count()} storage building(s); still waiting: {ledger.Get(goodId)}");
+                    ArchipelagoManager.PostLogMessage($"Delivered {total} {GoodDisplayName(goodId)} to storage");
+                }
             }
             foreach (var (delivery, error) in result.Failed)
-                Debug.LogWarning($"[Archipelago] Storage rejected {delivery.Amount} {delivery.GoodId}; it stays pending: " +
+                Debug.LogWarning($"[Archipelago] {(delivery.Slot is DistrictCenterStorageSlot ? "District Center" : "Storage")} " +
+                                 $"rejected {delivery.Amount} {delivery.GoodId}; it stays pending: " +
                                  $"{error.InnerException?.Message ?? error.Message}");
 
             if (!ledger.IsEmpty)
-                LogPendingOnce($"[Archipelago] Waiting for storage: {ledger.Serialize()} " +
-                               $"({slots.Count} finished stockpile(s) checked)", warning: false);
+                LogPendingOnce($"[Archipelago] Delivery path=Pending: waiting for storage: {ledger.Serialize()} " +
+                               $"({(districtCenterSlot != null ? "District Center '" + districtCenterSlot.Name + "' and " : "")}" +
+                               $"{slots.Count - (districtCenterSlot != null ? 1 : 0)} finished stockpile(s) checked)", warning: false);
             else
                 _lastPendingSummary = null;
+        }
+
+        /// <summary>
+        /// The finished District Center with the most beavers (first one on a tie),
+        /// or null when there is none or its output inventory is not active.
+        /// </summary>
+        private DistrictCenterStorageSlot FindDeliveryDistrictCenter()
+        {
+            DistrictCenter best = null;
+            Inventory bestInventory = null;
+            int bestPopulation = -1;
+            foreach (var districtCenter in _districtCenterRegistry.FinishedDistrictCenters)
+            {
+                if (districtCenter == null) continue;
+                var output = districtCenter.GetComponent<SimpleOutputInventory>();
+                var inventory = output != null ? output.Inventory : null;
+                if (inventory == null || !inventory.Enabled) continue;
+                var population = districtCenter.DistrictPopulation;
+                int count = population != null ? population.NumberOfAdults + population.NumberOfChildren : 0;
+                if (count > bestPopulation)
+                {
+                    best = districtCenter;
+                    bestInventory = inventory;
+                    bestPopulation = count;
+                }
+            }
+            return best == null ? null : new DistrictCenterStorageSlot(bestInventory, best.DistrictName);
         }
 
         /// <summary>Logs the waiting summary only when the pending amounts change, not every pass.</summary>
@@ -840,6 +913,39 @@ namespace ArchipelagoIntegration
             _lastPendingSummary = summary;
             if (warning) Debug.LogWarning(message);
             else Debug.Log(message);
+        }
+
+        /// <summary>
+        /// Game adapter for the District Center's output inventory
+        /// (SimpleOutputInventory: all goods allowed as output, PublicOutput, 20 per
+        /// good with ignorable capacity). It is not a public input, so the planner
+        /// flag reports true here on purpose: we deliver the way the game adds
+        /// starting goods, with GiveExistingIgnoringCapacity, and amounts over 20
+        /// count as unwanted stock that its workers haul out to storage.
+        /// </summary>
+        private sealed class DistrictCenterStorageSlot : IGoodsStorageSlot
+        {
+            public Inventory Inventory { get; }
+            public string Name { get; }
+
+            public DistrictCenterStorageSlot(Inventory inventory, string name)
+            {
+                Inventory = inventory;
+                Name = string.IsNullOrEmpty(name) ? "District Center" : name;
+            }
+
+            public bool PublicInput => true;
+
+            public bool Enabled => Inventory.Enabled;
+
+            // Gives() = the good is in the inventory's allowed output goods.
+            public bool Accepts(string goodId)
+            {
+                try { return Inventory.Gives(goodId); }
+                catch { return false; }
+            }
+
+            public int FreeCapacity(string goodId) => int.MaxValue;
         }
 
         /// <summary>Game adapter for the pending-goods planner: one stockpile inventory.</summary>

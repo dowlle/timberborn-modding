@@ -60,6 +60,7 @@ namespace ArchipelagoIntegration
         private static readonly PropertyKey<int> BaselineBadtideKey = new("BaselineBadtideCount");
         private static readonly PropertyKey<string> ShopPlacementsKey = new("ShopPlacements");
         private static readonly PropertyKey<string> PendingGoodsKey = new("PendingGoods");
+        private static readonly PropertyKey<int> GoodsDeliveryKey = new("GoodsDelivery");
 
         /// <summary>Fired when ShopLayout becomes available (from save or slot_data).</summary>
         public static event Action OnShopLayoutAvailable;
@@ -154,6 +155,12 @@ namespace ArchipelagoIntegration
 
         /// <summary>Whether the overall goal has been achieved (sent to server).</summary>
         public bool GoalAchieved { get; set; }
+
+        /// <summary>
+        /// Where received goods go (goods_delivery option). Refreshed from slot_data on
+        /// every connect and saved, so delivery keeps the mode while disconnected.
+        /// </summary>
+        public GoodsDeliveryMode DeliveryMode { get; set; } = GoodsDeliveryOption.Default;
 
         /// <summary>Active boost names, persisted so they survive save/load and re-apply on game start.</summary>
         public HashSet<string> ActiveBoosts { get; } = new();
@@ -342,6 +349,8 @@ namespace ArchipelagoIntegration
             }
             if (loader.Has(GoalAchievedKey))
                 GoalAchieved = loader.Get(GoalAchievedKey) == 1;
+            if (loader.Has(GoodsDeliveryKey))
+                DeliveryMode = GoodsDeliveryOption.FromSaveValue(loader.Get(GoodsDeliveryKey));
             if (loader.Has(ActiveBoostsKey))
             {
                 var raw = loader.Get(ActiveBoostsKey);
@@ -430,6 +439,12 @@ namespace ArchipelagoIntegration
             }
 
             Debug.Log($"[Archipelago] SaveData.OnConnectionChanged — ShopLayout null={ShopLayout == null}, count={ShopLayout?.Count ?? -1}");
+
+            // slot_data decides the delivery mode; seeds without the option get the District Center.
+            DeliveryMode = GoodsDeliveryOption.FromSlotData(slotData);
+            Debug.Log($"[Archipelago] Goods delivery: {GoodsDeliveryOption.Describe(DeliveryMode)} " +
+                      $"(slot_data {GoodsDeliveryOption.SlotDataKey}" +
+                      $"{(slotData != null && slotData.ContainsKey(GoodsDeliveryOption.SlotDataKey) ? "" : " missing, default")})");
 
             // Parse shop layout from slot_data if we don't already have one
             if (ShopLayout == null || ShopLayout.Count == 0)
@@ -643,6 +658,7 @@ namespace ArchipelagoIntegration
             if (CompletedGoals.Count > 0)
                 saver.Set(CompletedGoalsKey, string.Join("|", CompletedGoals));
             saver.Set(GoalAchievedKey, GoalAchieved ? 1 : 0);
+            saver.Set(GoodsDeliveryKey, GoodsDeliveryOption.ToSaveValue(DeliveryMode));
             if (ActiveBoosts.Count > 0)
                 saver.Set(ActiveBoostsKey, string.Join("|", ActiveBoosts));
             if (ScoutedPaths.Count > 0)

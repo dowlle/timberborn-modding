@@ -104,6 +104,20 @@ public static class PendingGoodsLedgerTests
         Deliver(shared, mixed);
         Check(Held(mixed, "Log") + Held(mixed, "Plank") == 40 && shared.TotalAmount == 20, "shared capacity delivery");
 
+        // District Center first: an unbounded first slot takes all of every good it
+        // accepts, storage only gets goods the District Center does not take, and the
+        // rest waits. The planner itself is unchanged; this pins the slot order contract.
+        var dcFirst = new PendingGoodsLedger();
+        dcFirst.Add("Log", 500);
+        dcFirst.Add("Plank", 40);
+        dcFirst.Add("Mystery", 7);
+        var districtCenter = Slot("district center", int.MaxValue, "Log", "Plank");
+        var plankPile = Slot("plank pile", 200, "Plank", "Mystery");
+        result = Deliver(dcFirst, districtCenter, plankPile);
+        Check(Held(districtCenter, "Log") == 500 && Held(districtCenter, "Plank") == 40, "district center takes everything it accepts");
+        Check(Held(plankPile, "Plank") == 0 && Held(plankPile, "Mystery") == 7, "storage only gets goods the district center rejects");
+        Check(dcFirst.IsEmpty, "district center first empties the ledger");
+
         // A rejected delivery stays pending and is reported.
         var failing = new PendingGoodsLedger();
         failing.Add("Gear", 12);
@@ -124,7 +138,7 @@ public static class PendingGoodsLedgerTests
         Check(loaded.IsEmpty && loaded.Serialize() == "", "empty load clears");
 
         Console.WriteLine("PASS: aggregation, no storage, ineligible slots, capacity split, full storage, " +
-                          "shared capacity, rejected delivery, save round-trip");
+                          "shared capacity, district center first, rejected delivery, save round-trip");
         return 0;
     }
 }
