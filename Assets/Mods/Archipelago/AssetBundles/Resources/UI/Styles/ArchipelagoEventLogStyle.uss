@@ -13,30 +13,45 @@
     border-width: 2px;
     border-color: rgb(120, 100, 70);
     border-radius: 6px;
-    flex-direction: column-reverse;
+    flex-direction: column;
+    overflow: hidden;
 }
 
-/* Collapsed: only the header, anchored to the bottom. */
+/* Collapsed: only the header row, anchored to the bottom. */
 .ap-log__wrapper--collapsed {
     top: auto;
 }
 
 /* ============================================================
-   Header bar
+   Header row: title left, buttons right, inside the frame
    ============================================================ */
 .ap-log__header {
     flex-direction: row;
+    flex-shrink: 0;
     justify-content: space-between;
     align-items: center;
-    padding: 5px 10px;
+    height: 32px;
+    margin: 0;
+    padding: 0 8px;
     background-color: rgba(50, 42, 32, 0.95);
-    border-top-width: 1px;
-    border-top-color: rgb(80, 70, 50);
+    border-bottom-width: 1px;
+    border-bottom-color: rgb(80, 70, 50);
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+}
+
+.ap-log__wrapper--collapsed .ap-log__header {
+    border-bottom-width: 0;
     border-bottom-left-radius: 4px;
     border-bottom-right-radius: 4px;
 }
 
 .ap-log__title {
+    flex-grow: 1;
+    flex-shrink: 1;
+    margin: 0;
+    padding: 0;
+    -unity-text-align: middle-left;
     -unity-font-style: bold;
     font-size: 13px;
     color: rgb(220, 200, 160);
@@ -44,24 +59,37 @@
 
 .ap-log__header-buttons {
     flex-direction: row;
+    flex-shrink: 0;
     align-items: center;
+    margin: 0;
+    padding: 0;
 }
 
-.ap-log__filter {
+/* Reset the game's default button box so both buttons sit in the row. */
+.ap-log__button {
+    flex-shrink: 0;
     height: 22px;
-    margin-right: 4px;
+    min-height: 22px;
+    max-height: 22px;
+    margin: 0;
     padding: 0 6px;
-    font-size: 11px;
+    background-image: none;
     background-color: rgb(60, 50, 38);
     border-width: 1px;
     border-color: rgb(100, 85, 60);
     border-radius: 3px;
     color: rgb(200, 185, 150);
+    -unity-text-align: middle-center;
 }
 
-.ap-log__filter:hover {
+.ap-log__button:hover {
     background-color: rgb(80, 68, 50);
     border-color: rgb(130, 110, 80);
+}
+
+.ap-log__filter {
+    margin-right: 4px;
+    font-size: 11px;
 }
 
 .ap-log__filter--active {
@@ -72,19 +100,10 @@
 
 .ap-log__toggle {
     width: 26px;
-    height: 22px;
+    min-width: 26px;
+    padding: 0;
     font-size: 12px;
-    background-color: rgb(60, 50, 38);
-    border-width: 1px;
-    border-color: rgb(100, 85, 60);
-    border-radius: 3px;
-    color: rgb(200, 185, 150);
     -unity-font-style: bold;
-}
-
-.ap-log__toggle:hover {
-    background-color: rgb(80, 68, 50);
-    border-color: rgb(130, 110, 80);
 }
 
 /* ============================================================
@@ -93,6 +112,7 @@
 .ap-log__scroll {
     flex-grow: 1;
     flex-shrink: 1;
+    min-height: 0;
     padding: 6px 8px;
 }
 
