@@ -4,13 +4,21 @@
 .ap-log__wrapper {
     position: absolute;
     right: 8px;
+    /* Tall column on the right: clear of the top-right clock/weather panels and the bottom bar.
+       Percentages keep the proportion at 1920x1080 and 2560x1440. */
+    top: 22%;
     bottom: 60px;
-    width: 270px;
+    width: 300px;
     background-color: rgba(30, 25, 20, 0.92);
     border-width: 2px;
     border-color: rgb(120, 100, 70);
     border-radius: 6px;
     flex-direction: column-reverse;
+}
+
+/* Collapsed: only the header, anchored to the bottom. */
+.ap-log__wrapper--collapsed {
+    top: auto;
 }
 
 /* ============================================================
@@ -34,6 +42,34 @@
     color: rgb(220, 200, 160);
 }
 
+.ap-log__header-buttons {
+    flex-direction: row;
+    align-items: center;
+}
+
+.ap-log__filter {
+    height: 22px;
+    margin-right: 4px;
+    padding: 0 6px;
+    font-size: 11px;
+    background-color: rgb(60, 50, 38);
+    border-width: 1px;
+    border-color: rgb(100, 85, 60);
+    border-radius: 3px;
+    color: rgb(200, 185, 150);
+}
+
+.ap-log__filter:hover {
+    background-color: rgb(80, 68, 50);
+    border-color: rgb(130, 110, 80);
+}
+
+.ap-log__filter--active {
+    background-color: rgb(95, 70, 40);
+    border-color: rgb(190, 150, 90);
+    color: rgb(240, 220, 170);
+}
+
 .ap-log__toggle {
     width: 26px;
     height: 22px;
@@ -55,7 +91,8 @@
    Scroll area
    ============================================================ */
 .ap-log__scroll {
-    max-height: 220px;
+    flex-grow: 1;
+    flex-shrink: 1;
     padding: 6px 8px;
 }
 
@@ -63,7 +100,7 @@
    Individual log messages
    ============================================================ */
 .ap-log__message {
-    font-size: 11px;
+    font-size: 12px;
     color: rgb(200, 190, 160);
     white-space: normal;
     margin-bottom: 3px;

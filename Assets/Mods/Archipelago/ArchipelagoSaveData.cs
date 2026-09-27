@@ -31,6 +31,7 @@ namespace ArchipelagoIntegration
     /// - Received AP items (tier gate state)
     /// - Shop layout (from slot_data, for branching shop)
     /// - Skips available
+    /// - Received goods still waiting for storage (PendingGoods)
     /// </summary>
     public class ArchipelagoSaveData : ISaveableSingleton, ILoadableSingleton, IUnloadableSingleton
     {
@@ -58,6 +59,7 @@ namespace ArchipelagoIntegration
         private static readonly PropertyKey<int> BaselineDroughtKey = new("BaselineDroughtCount");
         private static readonly PropertyKey<int> BaselineBadtideKey = new("BaselineBadtideCount");
         private static readonly PropertyKey<string> ShopPlacementsKey = new("ShopPlacements");
+        private static readonly PropertyKey<string> PendingGoodsKey = new("PendingGoods");
 
         /// <summary>Fired when ShopLayout becomes available (from save or slot_data).</summary>
         public static event Action OnShopLayoutAvailable;
@@ -167,6 +169,13 @@ namespace ArchipelagoIntegration
         /// </summary>
         public Dictionary<string, string> ShopPlacements { get; private set; } = new();
 
+        /// <summary>
+        /// Received goods not yet delivered into storage. Saved together with
+        /// ProcessedItemIndex, so a reload restores exactly the goods whose items
+        /// the save has already processed; later items replay into it.
+        /// </summary>
+        internal PendingGoodsLedger PendingGoods { get; } = new();
+
         public ArchipelagoSaveData(ISingletonLoader singletonLoader, FactionService factionService)
         {
             _singletonLoader = singletonLoader;
@@ -275,7 +284,7 @@ namespace ArchipelagoIntegration
             {
                 var raw = loader.Get(MilestonesKey);
                 if (!string.IsNullOrEmpty(raw))
-                    Milestones = DeserializeMilestones(raw);
+                    Milestones = MilestoneCodec.Deserialize(raw);
             }
             if (loader.Has(CheckedMilestonesKey))
             {
@@ -344,13 +353,16 @@ namespace ArchipelagoIntegration
                 if (!string.IsNullOrEmpty(raw))
                     ShopPlacements = DeserializeShopPlacements(raw);
             }
+            if (loader.Has(PendingGoodsKey))
+                PendingGoods.Load(loader.Get(PendingGoodsKey));
 
             Debug.Log($"[Archipelago] Loaded save data: ProcessedItemIndex={ArchipelagoManager.ProcessedItemIndex}, " +
                       $"CheckedLocs={CheckedLocations.Count}, ReceivedItems={ReceivedItems.Count}, " +
                       $"ShopSlots={ShopLayout?.Count ?? 0}, Skips={SkipsAvailable}, " +
                       $"Milestones={Milestones?.Count ?? 0}, CheckedMilestones={CheckedMilestoneIds.Count}, " +
                       $"ProgressiveChains={ProgressiveChains.Count}, " +
-                      $"Goals={Goals?.Count ?? 0}, CompletedGoals={CompletedGoals.Count}, GoalAchieved={GoalAchieved}");
+                      $"Goals={Goals?.Count ?? 0}, CompletedGoals={CompletedGoals.Count}, GoalAchieved={GoalAchieved}, " +
+                      $"PendingGoods=[{PendingGoods.Serialize()}]");
 
             if (ShopLayout != null && ShopLayout.Count > 0)
                 OnShopLayoutAvailable?.Invoke();
@@ -600,7 +612,7 @@ namespace ArchipelagoIntegration
 
             // Persist milestones
             if (Milestones != null && Milestones.Count > 0)
-                saver.Set(MilestonesKey, SerializeMilestones(Milestones));
+                saver.Set(MilestonesKey, MilestoneCodec.Serialize(Milestones));
             if (CheckedMilestoneIds.Count > 0)
                 saver.Set(CheckedMilestonesKey, string.Join("|", CheckedMilestoneIds));
             if (BaselineDroughtCount >= 0)
@@ -628,6 +640,8 @@ namespace ArchipelagoIntegration
                 saver.Set(ScoutedPathsKey, string.Join("|", ScoutedPaths));
             if (ShopPlacements.Count > 0)
                 saver.Set(ShopPlacementsKey, SerializeShopPlacements(ShopPlacements));
+            if (!PendingGoods.IsEmpty)
+                saver.Set(PendingGoodsKey, PendingGoods.Serialize());
         }
 
         /// <summary>
@@ -734,36 +748,6 @@ namespace ArchipelagoIntegration
             }
 
             Debug.Log($"[Archipelago] Parsed {result.Count} shop slots from slot_data");
-            return result;
-        }
-
-        // -----------------------------------------------------------------
-        // Milestone serialization (compact format)
-        // Format per milestone: "Name,LocationId,Type,Threshold"
-        // Milestones separated by ";"
-        // -----------------------------------------------------------------
-
-        private static string SerializeMilestones(List<MilestoneDefinition> milestones)
-        {
-            return string.Join(";", milestones.Select(m =>
-                $"{m.Name},{m.LocationId},{m.Type},{m.Threshold}"));
-        }
-
-        private static List<MilestoneDefinition> DeserializeMilestones(string raw)
-        {
-            var result = new List<MilestoneDefinition>();
-            foreach (var entry in raw.Split(';'))
-            {
-                var parts = entry.Split(',');
-                if (parts.Length < 4) continue;
-                result.Add(new MilestoneDefinition
-                {
-                    Name = parts[0],
-                    LocationId = long.Parse(parts[1]),
-                    Type = parts[2],
-                    Threshold = int.Parse(parts[3]),
-                });
-            }
             return result;
         }
 

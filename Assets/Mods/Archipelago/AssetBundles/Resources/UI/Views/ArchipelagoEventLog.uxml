@@ -4,7 +4,10 @@
         <ui:ScrollView name="LogScrollView" class="ap-log__scroll" />
         <ui:VisualElement class="ap-log__header">
             <ui:Label text="AP Log" class="ap-log__title" />
-            <ui:Button name="LogToggle" text="&#x25B2;" class="ap-log__toggle" />
+            <ui:VisualElement class="ap-log__header-buttons">
+                <ui:Button name="LogFilter" text="Show: All" class="ap-log__filter" />
+                <ui:Button name="LogToggle" text="&#x25B2;" class="ap-log__toggle" />
+            </ui:VisualElement>
         </ui:VisualElement>
     </ui:VisualElement>
 </ui:UXML>

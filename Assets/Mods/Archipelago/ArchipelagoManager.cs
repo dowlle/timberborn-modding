@@ -6,6 +6,7 @@ using Archipelago.MultiClient.Net;
 using Archipelago.MultiClient.Net.Enums;
 using Archipelago.MultiClient.Net.Helpers;
 using Archipelago.MultiClient.Net.MessageLog.Messages;
+using Archipelago.MultiClient.Net.MessageLog.Parts;
 using Archipelago.MultiClient.Net.Models;
 using Archipelago.MultiClient.Net.Packets;
 using UnityEngine;
@@ -22,6 +23,7 @@ namespace ArchipelagoIntegration
         public readonly long   LocationId;
         public readonly string LocationName;
         public readonly string SenderName;
+        public readonly int    SenderSlot;
         public readonly ItemFlags Flags;
         public readonly int    ItemIndex;
 
@@ -32,6 +34,7 @@ namespace ArchipelagoIntegration
             LocationId   = info.LocationId;
             LocationName = info.LocationName;
             SenderName   = info.Player?.Name ?? "Server";
+            SenderSlot   = info.Player?.Slot ?? 0;
             Flags        = info.Flags;
             ItemIndex    = itemIndex;
         }
@@ -81,7 +84,7 @@ namespace ArchipelagoIntegration
         public static event Action<bool, string> OnConnectionChanged; // (connected, message)
 
         /// <summary>Fired on the main thread for AP server messages and log events.</summary>
-        public static event Action<string> OnLogMessage;
+        public static event Action<ApLogEntry> OnLogMessage;
 
         /// <summary>
         /// Items with ItemIndex below this value are replays from server history.
@@ -92,7 +95,7 @@ namespace ArchipelagoIntegration
         // ------------------------------------------------------------------ internals
         private static ArchipelagoSession _session;
         private static readonly ConcurrentQueue<ApItem> _pendingItems = new();
-        private static readonly ConcurrentQueue<string> _pendingMessages = new();
+        private static readonly ConcurrentQueue<ApLogEntry> _pendingMessages = new();
 
         // Retry queue for failed location checks — drained each frame alongside items
         private static readonly Queue<long> _pendingLocationChecks = new();
@@ -147,7 +150,7 @@ namespace ArchipelagoIntegration
 
                 Debug.Log($"[Archipelago] Connected to {host}:{port} as '{slotName}'. Seed: {CurrentSeed}, ReplayBoundary: {ReplayBoundary}");
                 Debug.Log($"[Archipelago] SlotData keys: {string.Join(", ", SlotData.Keys)}");
-                _pendingMessages.Enqueue($"Connected to {host}:{port} as '{slotName}'");
+                _pendingMessages.Enqueue(ApLogEntry.Plain($"Connected to {host}:{port} as '{slotName}'"));
                 OnConnectionChanged?.Invoke(true, $"Connected as {slotName}");
             }
             else
@@ -196,7 +199,7 @@ namespace ArchipelagoIntegration
             _goalPending = false;
 
             Debug.Log($"[Archipelago] {reason}");
-            _pendingMessages.Enqueue(reason);
+            _pendingMessages.Enqueue(ApLogEntry.Plain(reason));
             OnConnectionChanged?.Invoke(false, reason);
         }
 
@@ -347,7 +350,29 @@ namespace ArchipelagoIntegration
         /// </summary>
         public static void PostLogMessage(string message)
         {
-            _pendingMessages.Enqueue(message);
+            _pendingMessages.Enqueue(ApLogEntry.Plain(message));
+        }
+
+        /// <summary>Queue a colored entry for the AP event log (main-thread safe).</summary>
+        public static void PostLogEntry(ApLogEntry entry)
+        {
+            if (entry != null) _pendingMessages.Enqueue(entry);
+        }
+
+        /// <summary>
+        /// Log a received item as "Received {item} from {sender}{suffix}", with the item
+        /// colored by its flags and the sender colored as own or other player.
+        /// </summary>
+        public static void PostReceivedItem(ApItem item, string itemText, string suffix = "")
+        {
+            var own = _session?.ConnectionInfo?.Slot ?? -1;
+            PostLogEntry(new ApLogEntryBuilder()
+                .Text("Received ")
+                .Item(itemText, (int)item.Flags)
+                .Text(" from ")
+                .Player(item.SenderName, item.SenderSlot == own)
+                .Text(suffix)
+                .Build(true));
         }
 
         // ------------------------------------------------------------------ item queue (main thread)
@@ -433,8 +458,60 @@ namespace ArchipelagoIntegration
 
         private static void OnServerMessageReceived(LogMessage message)
         {
-            var text = string.Join("", message.Parts.Select(p => p.Text));
-            _pendingMessages.Enqueue(text);
+            _pendingMessages.Enqueue(ToLogEntry(message));
+        }
+
+        /// <summary>Convert a server message into colored segments, following the AP text client.</summary>
+        private static ApLogEntry ToLogEntry(LogMessage message)
+        {
+            var builder = new ApLogEntryBuilder();
+            var mentionsSelf = false;
+            foreach (var part in message.Parts)
+            {
+                switch (part)
+                {
+                    case PlayerMessagePart player:
+                        mentionsSelf |= player.IsActivePlayer;
+                        builder.Player(part.Text, player.IsActivePlayer);
+                        break;
+                    case ItemMessagePart item:
+                        builder.Item(part.Text, (int)item.Flags);
+                        break;
+                    case LocationMessagePart _:
+                        builder.Location(part.Text);
+                        break;
+                    case EntranceMessagePart _:
+                        builder.Entrance(part.Text);
+                        break;
+                    default:
+                        builder.Text(part.Text);
+                        break;
+                }
+            }
+
+            ApLogMessageKind kind;
+            bool senderIsSelf = false, receiverIsSelf = false, playerIsSelf = false;
+            switch (message)
+            {
+                case ItemSendLogMessage itemSend:
+                    kind = ApLogMessageKind.ItemSend;
+                    senderIsSelf = itemSend.IsSenderTheActivePlayer;
+                    receiverIsSelf = itemSend.IsReceiverTheActivePlayer;
+                    break;
+                case PlayerSpecificLogMessage playerMessage:
+                    kind = ApLogMessageKind.PlayerEvent;
+                    playerIsSelf = playerMessage.IsActivePlayer;
+                    break;
+                case CommandResultLogMessage _:
+                case AdminCommandResultLogMessage _:
+                    kind = ApLogMessageKind.CommandResult;
+                    break;
+                default:
+                    kind = ApLogMessageKind.Other;
+                    break;
+            }
+
+            return builder.Build(ApLogFeedFilter.InvolvesSelf(kind, senderIsSelf, receiverIsSelf, playerIsSelf, mentionsSelf));
         }
 
         private static void OnSocketClosed(string reason)

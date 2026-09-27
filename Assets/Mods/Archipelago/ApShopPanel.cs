@@ -26,6 +26,7 @@ namespace ArchipelagoIntegration
         private Label _scienceLabel;
         private Label _statusLabel;
         private Label _skipsLabel;
+        private Label _pendingGoodsLabel;
         private Label _placeholder;
 
         private VisualElement _branchContainer;
@@ -74,6 +75,14 @@ namespace ArchipelagoIntegration
             _scienceLabel = _root.Q<Label>("ScienceLabel");
             _statusLabel = _root.Q<Label>("ShopStatus");
             _skipsLabel = _root.Q<Label>("SkipsLabel");
+
+            // Received goods still waiting for finished storage, below the status bar
+            _pendingGoodsLabel = new Label();
+            _pendingGoodsLabel.AddToClassList("ap-connect__status");
+            _pendingGoodsLabel.style.marginTop = 4;
+            var statusParent = _statusLabel.parent;
+            statusParent.Insert(statusParent.IndexOf(_statusLabel) + 1, _pendingGoodsLabel);
+            UpdatePendingGoodsLabel();
 
             _branchContainer = _root.Q<VisualElement>("BranchContainer");
             _branchContainer.style.display = DisplayStyle.None;
@@ -136,6 +145,7 @@ namespace ArchipelagoIntegration
             ArchipelagoSaveData.OnShopLayoutAvailable += OnShopLayoutAvailable;
             ArchipelagoManager.OnItemReceived += OnItemReceived;
             ArchipelagoManager.OnConnectionChanged += OnConnectionChanged;
+            _saveData.PendingGoods.Changed += UpdatePendingGoodsLabel;
 
             UpdateConnectionButtons();
             Debug.Log("[Archipelago] AP Shop ready — waiting for layout.");
@@ -146,6 +156,7 @@ namespace ArchipelagoIntegration
             ArchipelagoSaveData.OnShopLayoutAvailable -= OnShopLayoutAvailable;
             ArchipelagoManager.OnItemReceived -= OnItemReceived;
             ArchipelagoManager.OnConnectionChanged -= OnConnectionChanged;
+            _saveData.PendingGoods.Changed -= UpdatePendingGoodsLabel;
         }
 
         public void Show()
@@ -358,6 +369,7 @@ namespace ArchipelagoIntegration
             _statusLabel.text = ArchipelagoManager.IsConnected
                 ? $"Connected as {ArchipelagoManager.CurrentSlot}"
                 : "Not connected";
+            UpdatePendingGoodsLabel();
 
             if (_pathCards.Count == 0) return;
 
@@ -466,6 +478,16 @@ namespace ArchipelagoIntegration
         // =================================================================
         // Event handlers
         // =================================================================
+
+        private void UpdatePendingGoodsLabel()
+        {
+            if (_pendingGoodsLabel == null) return;
+            var pending = _saveData.PendingGoods;
+            _pendingGoodsLabel.text = pending.IsEmpty
+                ? ""
+                : $"Waiting for storage: {pending.Describe(ApEffectHandler.GoodDisplayName)}";
+            _pendingGoodsLabel.style.display = pending.IsEmpty ? DisplayStyle.None : DisplayStyle.Flex;
+        }
 
         private void OnItemReceived(ApItem item)
         {

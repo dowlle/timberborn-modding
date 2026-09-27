@@ -20,6 +20,9 @@ namespace ArchipelagoIntegration
 
             // Process queued weather traps even when disconnected (trap already received)
             ApEffectHandler.Instance?.ProcessWeatherQueue();
+
+            // Deliver received goods waiting for storage, also while disconnected
+            ApEffectHandler.Instance?.ProcessPendingGoods();
         }
     }
 }
