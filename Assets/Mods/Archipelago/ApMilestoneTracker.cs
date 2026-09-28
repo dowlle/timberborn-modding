@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Reflection;
 using Newtonsoft.Json.Linq;
 using Timberborn.GameWonderCompletion;
 using Timberborn.HazardousWeatherSystem;
@@ -13,18 +12,6 @@ using UnityEngine;
 
 namespace ArchipelagoIntegration
 {
-    /// <summary>
-    /// Definition of a single milestone, parsed from slot_data.
-    /// </summary>
-    public class MilestoneDefinition
-    {
-        public string Name;        // "Population: Reach 15 Beavers"
-        public long   LocationId;  // AP location ID
-        public string Type;        // "population", "wellbeing", "survival", "wonder", "resource"
-        public int    Threshold;   // numeric threshold (10, 5, 1, etc.)
-        public string GoodId;      // game GoodId string for resource milestones (e.g. "Log", "MetalBlock")
-    }
-
     /// <summary>
     /// Polls game services each tick to detect milestone completion and send AP
     /// location checks.  Milestone definitions come from slot_data so the APWorld
@@ -38,12 +25,17 @@ namespace ArchipelagoIntegration
         private readonly PopulationService _populationService;
         private readonly WellbeingService _wellbeingService;
         private readonly HazardousWeatherHistory _weatherHistory;
-        private readonly GameWonderCompletionService _wonderService;
+        private readonly HazardSurvivalTracker _survival;
+        private readonly WonderCompletionCountdownStarter _wonderCountdown;
         private readonly ResourceCountingService _resourceCountingService;
         private readonly ArchipelagoSaveData _saveData;
 
         private List<MilestoneDefinition> _milestones = new();
         private HashSet<long> _checkedMilestoneIds = new();
+
+        // Resource milestones already warned about this load, so a milestone that
+        // cannot be evaluated logs once instead of every tick.
+        private readonly HashSet<long> _warnedResourceMilestoneIds = new();
 
         // Track "first beaver born / grown" via population deltas
         private bool _everSawBirth;
@@ -53,21 +45,20 @@ namespace ArchipelagoIntegration
 
         // Baselines are stored in ArchipelagoSaveData for persistence across save/load.
 
-        // Cached reflection for wonder completion (runtime enforces access on publicized internals)
-        private MethodInfo _isWonderCompletedMethod;
-
         public ApMilestoneTracker(
             PopulationService populationService,
             WellbeingService wellbeingService,
             HazardousWeatherHistory weatherHistory,
-            GameWonderCompletionService wonderService,
+            HazardSurvivalTracker survival,
+            WonderCompletionCountdownStarter wonderCountdown,
             ResourceCountingService resourceCountingService,
             ArchipelagoSaveData saveData)
         {
             _populationService = populationService;
             _wellbeingService = wellbeingService;
             _weatherHistory = weatherHistory;
-            _wonderService = wonderService;
+            _survival = survival;
+            _wonderCountdown = wonderCountdown;
             _resourceCountingService = resourceCountingService;
             _saveData = saveData;
         }
@@ -95,9 +86,10 @@ namespace ArchipelagoIntegration
         {
             _milestones = _saveData.Milestones ?? new List<MilestoneDefinition>();
             _checkedMilestoneIds = new HashSet<long>(_saveData.CheckedMilestoneIds);
+            _warnedResourceMilestoneIds.Clear();
 
-            // Snapshot current hazardous weather counts so survival milestones
-            // only fire for events the player lives through during this AP session.
+            // Snapshot the game's rolled hazard counts. Survival now counts ended hazards
+            // (HazardSurvivalTracker); the baselines stay for saves from older versions.
             if (_saveData.BaselineDroughtCount < 0)
                 _saveData.BaselineDroughtCount = _weatherHistory.GetCyclesCount("DroughtWeather");
             if (_saveData.BaselineBadtideCount < 0)
@@ -188,53 +180,44 @@ namespace ArchipelagoIntegration
 
         private bool EvaluateSurvival(MilestoneDefinition m)
         {
-            // HazardousWeatherId values are "DroughtWeather" and "BadtideWeather"
-            // (matching the class names, not the short display names).
-            // Subtract the baseline so we only count events survived during this AP session.
+            // Hazards count when they end, and only while this save is bound to the slot.
             if (m.Name.Contains("Drought"))
-            {
-                int survived = _weatherHistory.GetCyclesCount("DroughtWeather") - _saveData.BaselineDroughtCount;
-                return survived >= m.Threshold;
-            }
+                return _survival.SurvivedDroughts >= m.Threshold;
 
             if (m.Name.Contains("Badtide"))
-            {
-                int survived = _weatherHistory.GetCyclesCount("BadtideWeather") - _saveData.BaselineBadtideCount;
-                return survived >= m.Threshold;
-            }
+                return _survival.SurvivedBadtides >= m.Threshold;
 
             return false;
         }
 
         private bool EvaluateWonder(MilestoneDefinition m)
         {
-            // Runtime enforces access on publicized internal methods — must use reflection
-            if (_isWonderCompletedMethod == null)
-            {
-                _isWonderCompletedMethod = _wonderService.GetType().GetMethod(
-                    "IsWonderCompletedWithCurrentFaction",
-                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-
-                if (_isWonderCompletedMethod == null)
-                {
-                    Debug.LogWarning("[Archipelago] Could not find IsWonderCompletedWithCurrentFaction method");
-                    return false;
-                }
-            }
-
-            return (bool)_isWonderCompletedMethod.Invoke(_wonderService, null);
+            // CountdownFinished is saved per game. The game's own "completed with this
+            // faction" check reads the player profile per map, so it is also true for a
+            // wonder finished in an earlier game on the same map.
+            return _wonderCountdown.CountdownFinished;
         }
 
         private bool EvaluateResource(MilestoneDefinition m)
         {
             if (string.IsNullOrEmpty(m.GoodId))
             {
-                Debug.LogWarning($"[Archipelago] Resource milestone '{m.Name}' has no GoodId — skipping");
+                if (_warnedResourceMilestoneIds.Add(m.LocationId))
+                    Debug.LogWarning($"[Archipelago] Resource milestone '{m.Name}' has no GoodId — skipping");
                 return false;
             }
 
-            var resourceCount = _resourceCountingService.GetGlobalResourceCount(m.GoodId);
-            return resourceCount.AllStock >= m.Threshold;
+            try
+            {
+                var resourceCount = _resourceCountingService.GetGlobalResourceCount(m.GoodId);
+                return resourceCount.AllStock >= m.Threshold;
+            }
+            catch (Exception ex)
+            {
+                if (_warnedResourceMilestoneIds.Add(m.LocationId))
+                    Debug.LogWarning($"[Archipelago] Resource milestone '{m.Name}' cannot count GoodId '{m.GoodId}' — skipping: {ex.Message}");
+                return false;
+            }
         }
 
         /// <summary>
@@ -263,13 +246,14 @@ namespace ArchipelagoIntegration
 
             foreach (var item in arr)
             {
+                var name = item["name"]?.ToString() ?? "";
                 result.Add(new MilestoneDefinition
                 {
-                    Name = item["name"]?.ToString() ?? "",
+                    Name = name,
                     LocationId = item["location_id"]?.ToObject<long>() ?? 0,
                     Type = item["type"]?.ToString() ?? "unknown",
                     Threshold = item["threshold"]?.ToObject<int>() ?? 0,
-                    GoodId = item["good_id"]?.ToString() ?? "",
+                    GoodId = MilestoneCodec.ResolveGoodId(name, item["good_id"]?.ToString()),
                 });
             }
 

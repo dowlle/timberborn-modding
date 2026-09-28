@@ -21,6 +21,20 @@ namespace ArchipelagoIntegration
 
         private static readonly Dictionary<string, string> TemplateToBuilding = new()
         {
+            // Timberborn 1.1 additions. Existing AP names retain their aliases.
+            { "Airlock.Folktails", "Airlock" },
+            { "Airlock.IronTeeth", "Airlock" },
+            { "ImpermeablePowerShaft.Folktails", "Impermeable Power Shaft" },
+            { "ImpermeablePowerShaft.IronTeeth", "Impermeable Power Shaft" },
+            { "CompactMechanicalPump.Folktails", "Compact Mechanical Pump" },
+            { "CompactMechanicalPump.IronTeeth", "Compact Mechanical Pump" },
+            { "HallOfAbundance.Folktails", "Hall of Abundance" },
+            { "Sauna.Folktails", "Sauna" },
+            { "DomedGarden.Folktails", "Domed Garden" },
+            { "ArchOfProgress.IronTeeth", "Arch of Progress" },
+            { "Massager.IronTeeth", "Massager" },
+            { "ImpermeableTubeway.IronTeeth", "Impermeable Tubeway" },
+            { "DancePit.IronTeeth", "Dance Pit" },
             // ----- Folktails entries (128 = 86 shared + 42 FT-only) -----
             { "Agora.Folktails", "Agora" },
             { "AquaticFarmhouse.Folktails", "Aquatic Farmhouse" },
@@ -312,6 +326,7 @@ namespace ArchipelagoIntegration
 
         private static readonly HashSet<string> Tier2Buildings = new()
         {
+            "Sauna", "Massager",
             // Shared T2
             "Medium Tank", "Vertical Power Shaft", "Chronometer",
             "Lever", "Relay", "Flow Sensor",
@@ -324,6 +339,7 @@ namespace ArchipelagoIntegration
 
         private static readonly HashSet<string> Tier3Buildings = new()
         {
+            "Airlock", "Impermeable Power Shaft", "Impermeable Tubeway",
             // Shared T3
             "Smelter", "Bot Part Factory", "Bot Assembler",
             "Large Tank", "Badwater Pump", "Fill Valve", "Aquifer Drill",
@@ -343,10 +359,12 @@ namespace ArchipelagoIntegration
             "Decontamination Pod", "Wind Tunnel",
             "Tubeway", "Vertical Tubeway", "Tubeway Station",
             "Brazier", "Bell", "Decorative Clock",
+            "Exercise Plaza", "Tribute to Ingenuity",
         };
 
         private static readonly HashSet<string> Tier4Buildings = new()
         {
+            "Compact Mechanical Pump", "Hall of Abundance", "Domed Garden", "Arch of Progress",
             // Shared T4
             "Large Water Pump", "Mechanical Fluid Pump", "Valve",
             "Dynamite", "Double Dynamite", "Terrain Block",
@@ -361,15 +379,16 @@ namespace ArchipelagoIntegration
             "Coffee Brewery", "Advanced Breeding Pod",
             "Deep Mechanical Fluid Pump", "Badwater Discharge",
             "Irrigation Barrier", "Efficient Mine", "Grease Factory",
-            "Motivatorium", "Mud Bath", "Tribute to Ingenuity",
+            "Motivatorium", "Mud Bath",
         };
 
         private static readonly HashSet<string> Tier5Buildings = new()
         {
+            "Dance Pit",
             // IT-only T5
             "Oil Press", "Hydroponic Garden", "Deep Badwater Pump",
             "Steam Engine", "Charging Station", "Numbercruncher",
-            "Exercise Plaza", "Metal Fence", "Beaver Bust",
+            "Metal Fence", "Beaver Bust",
             "Flame of Unity",
         };
 
@@ -404,7 +423,8 @@ namespace ArchipelagoIntegration
                 case ApTier.Tier1:
                     return true;
                 case ApTier.Tier2:
-                    return receivedItems.Contains("Blueprint: Gear Workshop");
+                    return receivedItems.Contains("Blueprint: Forester")
+                        && receivedItems.Contains("Blueprint: Gear Workshop");
                 case ApTier.Tier3:
                     bool hasTier2 = IsTierUnlocked(ApTier.Tier2, receivedItems, faction);
                     bool hasSmelter = receivedItems.Contains("Blueprint: Smelter");
@@ -417,12 +437,107 @@ namespace ArchipelagoIntegration
                         && receivedItems.Contains("Blueprint: Tapper's Shack")
                         && receivedItems.Contains("Blueprint: Wood Workshop");
                 case ApTier.Tier5:
+                    // Folktails Bot Chassis costs Biofuel, which only the Refinery makes.
                     return IsTierUnlocked(ApTier.Tier4, receivedItems, faction)
                         && receivedItems.Contains("Blueprint: Bot Part Factory")
-                        && receivedItems.Contains("Blueprint: Bot Assembler");
+                        && receivedItems.Contains("Blueprint: Bot Assembler")
+                        && (faction == "IronTeeth" || receivedItems.Contains("Blueprint: Refinery"));
                 default:
                     return false;
             }
+        }
+
+        // -----------------------------------------------------------------
+        // Building requirements beyond the slot tier. Mirrors Rules.py.
+        // -----------------------------------------------------------------
+
+        // Buildings that use Explosives or Extract (Rules.py EXPLOSIVES_CONSUMERS and
+        // EXTRACT_CONSUMERS) need the good's production chain, badwater source included.
+        private static readonly HashSet<string> ExplosivesConsumers = new()
+        {
+            "Dynamite", "Double Dynamite", "Triple Dynamite", "Tunnel", "Detonator",
+        };
+
+        private static readonly HashSet<string> ExtractConsumers = new()
+        {
+            "Double Dynamite", "Triple Dynamite", "Tunnel", "Detonator", "Memory",
+            "Pole Banner", "Square Banner", "Agora", "Detailer",
+            "Decontamination Pod", "Advanced Breeding Pod", "Grease Factory",
+        };
+
+        // Rules.py RESOURCE_CHAINS["Badwater"] per faction: the source and the
+        // metal chain its construction needs.
+        private static readonly string[] FolktailsBadwater =
+            { "Badwater Pump", "Gear Workshop", "Forester", "Smelter", "Scavenger Flag" };
+        private static readonly string[] IronTeethBadwater =
+            { "Metalsmith", "Deep Badwater Pump", "Gear Workshop", "Forester", "Smelter" };
+
+        /// <summary>Blueprints a building needs beyond its slot tier (mirrors building_prerequisite_blueprints).</summary>
+        public static List<string> GetBuildingPrerequisites(string buildingName, string faction = "Folktails")
+        {
+            var required = new List<string>();
+            bool ironTeeth = faction == "IronTeeth";
+            var badwater = ironTeeth ? IronTeethBadwater : FolktailsBadwater;
+            if (ExplosivesConsumers.Contains(buildingName))
+            {
+                required.AddRange(badwater);
+                required.Add("Explosives Factory");
+            }
+            if (ExtractConsumers.Contains(buildingName))
+            {
+                required.AddRange(badwater);
+                required.Add("Centrifuge");
+            }
+            if (buildingName == "Dance Pit" && ironTeeth)
+                required.Add("Metalsmith");
+            return required.Distinct().ToList();
+        }
+
+        public static bool HasBuildingPrerequisites(string buildingName, HashSet<string> receivedItems,
+                                                    string faction = "Folktails")
+            => GetBuildingPrerequisites(buildingName, faction)
+                .All(b => receivedItems.Contains("Blueprint: " + b));
+
+        /// <summary>Blueprints a slot tier needs, lowest tier first (mirrors IsTierUnlocked).</summary>
+        public static List<string> GetTierBlueprints(int tier, string faction = "Folktails")
+        {
+            var required = new List<string>();
+            if (tier >= 2) required.AddRange(new[] { "Forester", "Gear Workshop" });
+            if (tier >= 3)
+            {
+                if (faction != "IronTeeth") required.Add("Scavenger Flag");
+                required.Add("Smelter");
+            }
+            if (tier >= 4) required.AddRange(new[] { "Tapper's Shack", "Wood Workshop" });
+            if (tier >= 5)
+            {
+                required.AddRange(new[] { "Bot Part Factory", "Bot Assembler" });
+                if (faction != "IronTeeth") required.Add("Refinery");
+            }
+            return required;
+        }
+
+        /// <summary>
+        /// Why a shop slot cannot be bought yet, as "Needs: previous check, Smelter,
+        /// 120 science", or "" when nothing is missing. Lists only what the slot
+        /// requires (previous check, Forester after the first slot, tier and building
+        /// prerequisites, science), never what the slot contains.
+        /// </summary>
+        public static string DescribeShopLock(int tier, string buildingName, bool firstInPath,
+                                              bool previousChecked, int price, int sciencePoints,
+                                              HashSet<string> receivedItems, string faction = "Folktails")
+        {
+            var needs = new List<string>();
+            if (!firstInPath && !previousChecked)
+                needs.Add("previous check");
+            var blueprints = new List<string>();
+            if (!firstInPath) blueprints.Add("Forester");
+            blueprints.AddRange(GetTierBlueprints(tier, faction));
+            blueprints.AddRange(GetBuildingPrerequisites(buildingName, faction));
+            needs.AddRange(blueprints.Distinct().Where(b => !receivedItems.Contains("Blueprint: " + b)));
+            if (sciencePoints < price)
+                needs.Add(price + " science");
+            return needs.Count == 0 ? "" : "Needs: " + string.Join(", ", needs);
         }
 
         // -----------------------------------------------------------------
@@ -515,24 +630,5 @@ namespace ArchipelagoIntegration
         /// </summary>
         public static IEnumerable<KeyValuePair<string, string>> AllEntries
             => TemplateToBuilding;
-
-        /// <summary>
-        /// Returns the tier requirement text for the given tier and faction.
-        /// IT Tier 3 does not require Scavenger Flag (scrap gathering is free).
-        /// </summary>
-        public static string GetTierRequirementText(int tier, string faction = "Folktails")
-        {
-            switch (tier)
-            {
-                case 2: return "Requires: Gear Workshop";
-                case 3:
-                    return faction == "IronTeeth"
-                        ? "Requires: Smelter"
-                        : "Requires: Scavenger Flag + Smelter";
-                case 4: return "Requires: Tapper's Shack + Wood Workshop";
-                case 5: return "Requires: Bot Part Factory + Bot Assembler";
-                default: return "";
-            }
-        }
     }
 }

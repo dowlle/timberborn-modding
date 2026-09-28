@@ -2,21 +2,28 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
-using System.Text.RegularExpressions;
 using Timberborn.BonusSystem;
+using Timberborn.Effects;
 using Timberborn.EntitySystem;
+using Timberborn.GameDistricts;
 using Timberborn.GameCycleSystem;
+using Timberborn.Goods;
 using Timberborn.HazardousWeatherSystem;
+using Timberborn.InventorySystem;
+using Timberborn.NeedSystem;
 using Timberborn.Population;
+using Timberborn.SimpleOutputBuildings;
 using Timberborn.SingletonSystem;
+using Timberborn.Stockpiles;
 using Timberborn.WeatherSystem;
 using UnityEngine;
 
 namespace ArchipelagoIntegration
 {
     /// <summary>
-    /// Handles non-blueprint AP item effects: traps, filler (resource injection),
-    /// and boosts (permanent stat bonuses).
+    /// Handles non-blueprint AP item effects: traps, filler (received goods,
+    /// delivered from the pending-goods ledger into storage), and boosts
+    /// (permanent stat bonuses).
     /// </summary>
     public class ApEffectHandler : ILoadableSingleton, IPostLoadableSingleton, IUnloadableSingleton
     {
@@ -28,6 +35,7 @@ namespace ArchipelagoIntegration
         private readonly GameCycleService _gameCycleService;
         private readonly EntityComponentRegistry _entityComponentRegistry;
         private readonly EntityRegistry _entityRegistry;
+        private readonly DistrictCenterRegistry _districtCenterRegistry;
         private readonly BonusTypeSpecService _bonusTypeSpecService;
         private readonly PopulationService _populationService;
         private readonly ArchipelagoSaveData _saveData;
@@ -60,39 +68,34 @@ namespace ArchipelagoIntegration
         // in a stale configuration during the temperate cycle that follows.
         private bool _trapScheduledAwaitingTransition;
 
-        // Filler injection pipeline: GoodAmount struct + Inventory.GiveIgnoringCapacity
-        // resolved via reflection. Inventory extends BaseComponent (not UnityEngine.Object),
-        // so entities must be located via EntityComponentRegistry, not FindObjectsByType.
-        private Type _goodAmountType;
-        private Type _inventoryType;
-        private MethodInfo _giveIgnoringCapacityMethod;
-        private MethodInfo _givesMethod;
-        private PropertyInfo _publicInputProperty;  // Inventory.PublicInput — filters out carry slots + internal buffers
-        private bool _inventorySystemSearched;
+        // Filler delivery: received goods wait in ArchipelagoSaveData.PendingGoods and
+        // a periodic pass moves them out. The goods_delivery option (slot_data, saved in
+        // ArchipelagoSaveData.DeliveryMode) picks the target:
+        // - District Center (default): the District Center's output inventory, the same
+        //   inventory and call the game uses for starting berries and water
+        //   (StartingGoodsProvider -> GiveExistingIgnoringCapacity). Its workers haul the
+        //   goods to storage, builders can take them, and beavers eat and drink from it.
+        //   Goods it does not take go to stockpiles.
+        // - Storage: only what fits into finished stockpiles. Stockpile is the only
+        //   inventory owner with PublicInput, and it enables its inventory only in the
+        //   finished state, so construction sites, carry slots and workshop buffers are
+        //   never candidates.
+        // In both modes, goods that find no room stay pending for the next pass.
+        private const float DeliveryIntervalSeconds = 3f;
+        private GoodsDeliveryMode? _lastDeliveryMode;
+        private float _nextDeliveryTime;
+        private string _lastPendingSummary;
 
         // BonusManager resolved via reflection
         private Type _bonusManagerType;
         private MethodInfo _addBonusMethod;
         private bool _bonusSystemSearched;
 
-        // NeedManager resolved via reflection
-        private Type _needManagerType;
-        private FieldInfo _allNeedsField;       // NeedManager.<AllNeeds>k__BackingField
-        private PropertyInfo _needIdProperty;   // Need.NeedId
-        private MethodInfo _setPointsMethod;    // Need.SetPoints(float)
-        private bool _needSystemSearched;
-
-        // Filler: display name → game GoodId string
-        private static readonly Dictionary<string, string> FillerGoodMapping = new()
-        {
-            { "Logs", "Log" },
-            { "Planks", "Plank" },
-            { "Gears", "Gear" },
-            { "Bread", "Bread" },
-            { "Metal Blocks", "MetalBlock" },
-            { "Treated Planks", "TreatedPlank" },
-            { "Scrap Metal", "ScrapMetal" },
-        };
+        // Resource items: package settings parsed from slot_data, cached per slot_data
+        // instance. Names and base amounts live in ResourcePackages.
+        private Dictionary<string, object> _packageSlotData;
+        private int? _packagePercent;
+        private Dictionary<string, (string goodId, int amount)> _slotPackages;
 
         // Boost: item suffix → (BonusId string, multiplier delta)
         // BonusId strings match BonusTypeSpec.Id from game blueprint JSON specs
@@ -113,6 +116,7 @@ namespace ArchipelagoIntegration
             GameCycleService gameCycleService,
             EntityComponentRegistry entityComponentRegistry,
             EntityRegistry entityRegistry,
+            DistrictCenterRegistry districtCenterRegistry,
             BonusTypeSpecService bonusTypeSpecService,
             PopulationService populationService,
             ArchipelagoSaveData saveData,
@@ -124,6 +128,7 @@ namespace ArchipelagoIntegration
             _gameCycleService = gameCycleService;
             _entityComponentRegistry = entityComponentRegistry;
             _entityRegistry = entityRegistry;
+            _districtCenterRegistry = districtCenterRegistry;
             _bonusTypeSpecService = bonusTypeSpecService;
             _populationService = populationService;
             _saveData = saveData;
@@ -166,7 +171,7 @@ namespace ArchipelagoIntegration
         /// <summary>
         /// Iterate every game entity and collect the first non-null component of
         /// the given BaseComponent-derived type. Used for both BonusManager (boosts)
-        /// and Inventory (filler) lookups.
+        /// and NeedManager (traps) lookups.
         /// </summary>
         private List<object> FindEntityComponents(Type componentType)
         {
@@ -241,8 +246,12 @@ namespace ArchipelagoIntegration
             catch (Exception ex) { Debug.LogWarning($"[Archipelago] PostLoad entity count failed: {ex.Message}"); }
 
             int bonusMgrs = _bonusManagerType != null ? FindEntityComponents(_bonusManagerType).Count : -1;
-            int inventories = _inventoryType != null ? FindEntityComponents(_inventoryType).Count : -1;
-            int needMgrs = _needManagerType != null ? FindEntityComponents(_needManagerType).Count : -1;
+            int inventories = -1;
+            try { inventories = _entityComponentRegistry.GetEnabled<Stockpile>().Count(); }
+            catch (Exception ex) { Debug.LogWarning($"[Archipelago] PostLoad stockpile count failed: {ex.Message}"); }
+            int needMgrs = -1;
+            try { needMgrs = _entityComponentRegistry.GetEnabled<NeedManager>().Count(); }
+            catch (Exception ex) { Debug.LogWarning($"[Archipelago] PostLoad NeedManager count failed: {ex.Message}"); }
 
             int beavers = -1, adults = -1, bots = -1;
             try
@@ -258,7 +267,7 @@ namespace ArchipelagoIntegration
             }
 
             Debug.Log($"[Archipelago] PostLoad state — " +
-                      $"entities={totalEntities}, BonusManagers={bonusMgrs}, Inventories={inventories}, " +
+                      $"entities={totalEntities}, BonusManagers={bonusMgrs}, FinishedStockpiles={inventories}, " +
                       $"NeedManagers={needMgrs}, beavers={beavers} (adults={adults}), bots={bots}");
         }
 
@@ -278,8 +287,6 @@ namespace ArchipelagoIntegration
         {
             EnsureBaseComponentResolved();
             EnsureBonusSystemResolved();
-            EnsureInventorySystemResolved();
-            EnsureNeedSystemResolved();
 
             Debug.Log("[Archipelago] Reflection dry-run beginning…");
 
@@ -298,46 +305,27 @@ namespace ArchipelagoIntegration
                 }
             }
 
-            // 2) Inventory lookup + GiveIgnoringCapacity (filler pipeline)
-            if (_inventoryType != null)
+            // 2) Finished stockpile lookup (filler delivery pipeline)
+            try
             {
-                try
-                {
-                    var invs = FindEntityComponents(_inventoryType);
-                    Debug.Log($"[Archipelago] Dry-run: Inventory enumerable — {invs.Count} instance(s).");
-                }
-                catch (Exception ex)
-                {
-                    Debug.LogWarning($"[Archipelago] Dry-run FAILED: Inventory enumeration threw: {ex.Message}");
-                }
+                var stockpiles = _entityComponentRegistry.GetEnabled<Stockpile>().Count();
+                Debug.Log($"[Archipelago] Dry-run: finished Stockpile enumerable — {stockpiles} instance(s).");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[Archipelago] Dry-run FAILED: Stockpile enumeration threw: {ex.Message}");
             }
 
-            // 3) NeedManager lookup (trap pipeline)
-            if (_needManagerType != null)
+            // 3) NeedManager lookup (need traps). NeedManager is an IRegisteredComponent,
+            // so the registry lists it directly.
+            try
             {
-                try
-                {
-                    var nms = FindEntityComponents(_needManagerType);
-                    Debug.Log($"[Archipelago] Dry-run: NeedManager enumerable — {nms.Count} instance(s).");
-                }
-                catch (Exception ex)
-                {
-                    Debug.LogWarning($"[Archipelago] Dry-run FAILED: NeedManager enumeration threw: {ex.Message}");
-                }
+                var nms = _entityComponentRegistry.GetEnabled<NeedManager>().Count();
+                Debug.Log($"[Archipelago] Dry-run: NeedManager enumerable — {nms} instance(s).");
             }
-
-            // 4) GoodAmount construction (filler pipeline secondary check)
-            if (_goodAmountType != null)
+            catch (Exception ex)
             {
-                try
-                {
-                    Activator.CreateInstance(_goodAmountType, "Log", 1);
-                    Debug.Log("[Archipelago] Dry-run: GoodAmount('Log', 1) ctor OK.");
-                }
-                catch (Exception ex)
-                {
-                    Debug.LogWarning($"[Archipelago] Dry-run FAILED: GoodAmount ctor threw: {ex.Message}");
-                }
+                Debug.LogWarning($"[Archipelago] Dry-run FAILED: NeedManager enumeration threw: {ex.Message}");
             }
 
             Debug.Log("[Archipelago] Reflection dry-run complete.");
@@ -359,7 +347,7 @@ namespace ArchipelagoIntegration
         {
             if (item.ItemName.StartsWith("Trap: "))
                 HandleTrap(item);
-            else if (item.ItemName.StartsWith("Filler: "))
+            else if (ResourcePackages.IsResourceItem(item.ItemName))
                 HandleFiller(item);
             else if (item.ItemName.StartsWith("Boost: "))
                 HandleBoost(item);
@@ -381,10 +369,8 @@ namespace ArchipelagoIntegration
                     TriggerHazardousWeather();
                     break;
                 case "Hungry Beavers":
-                    TriggerHungryBeavers();
-                    break;
                 case "Thirsty Beavers":
-                    TriggerThirstyBeavers();
+                    TriggerNeedTrap(trapName);
                     break;
                 // Legacy trap names kept for backwards compat with any v0.0.2-era
                 // seeds still in circulation; both now route through the generic
@@ -659,284 +645,338 @@ namespace ArchipelagoIntegration
             Debug.Log("[Archipelago] Post-trap cleanup complete, queue drain re-enabled.");
         }
 
-        private void TriggerHungryBeavers()
-        {
-            try
-            {
-                // Set Hunger need to -0.5 (critical state, range is -3.0 to 1.0)
-                int affected = SetNeedOnAllBeavers("Hunger", -0.5f);
-                Debug.Log($"[Archipelago] Hungry Beavers: set hunger to critical on {affected} entities");
-                Debug.Log($"[Archipelago/Trap] HUNGRY_BEAVERS fired: " +
-                          $"affected={affected}, cycle={_gameCycleService.Cycle}, day={_gameCycleService.CycleDay}");
-                ArchipelagoManager.PostLogMessage($"Trap activated: Hungry Beavers! ({affected} beavers affected)");
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning($"[Archipelago] Hungry Beavers trap failed: {ex.Message}");
-                ArchipelagoManager.PostLogMessage("Trap: Hungry Beavers (failed to apply)");
-            }
-        }
-
-        private void TriggerThirstyBeavers()
-        {
-            try
-            {
-                // Set Thirst need to -0.5 (critical state, range is -3.0 to 1.0)
-                int affected = SetNeedOnAllBeavers("Thirst", -0.5f);
-                Debug.Log($"[Archipelago] Thirsty Beavers: set thirst to critical on {affected} entities");
-                Debug.Log($"[Archipelago/Trap] THIRSTY_BEAVERS fired: " +
-                          $"affected={affected}, cycle={_gameCycleService.Cycle}, day={_gameCycleService.CycleDay}");
-                ArchipelagoManager.PostLogMessage($"Trap activated: Thirsty Beavers! ({affected} beavers affected)");
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning($"[Archipelago] Thirsty Beavers trap failed: {ex.Message}");
-                ArchipelagoManager.PostLogMessage("Trap: Thirsty Beavers (failed to apply)");
-            }
-        }
-
         /// <summary>
-        /// Sets a need to a specific point value on all beavers via NeedManager.
+        /// Hungry Beavers / Thirsty Beavers: drops the Hunger or Thirst need of every
+        /// beaver (not bots) to NeedTraps.CriticalPoints. Beavers already at or below
+        /// that level are left alone. The change goes through
+        /// NeedManager.ApplyEffect(InstantEffect), the path the game's own need
+        /// debug buttons use, so the critical-state and minimum-state events fire
+        /// (status icon, work penalties, death tracking) as for a normal change.
+        /// Writes exactly one log line per trap.
         /// </summary>
-        private int SetNeedOnAllBeavers(string needId, float points)
+        private void TriggerNeedTrap(string trapName)
         {
-            EnsureNeedSystemResolved();
-
-            if (_needManagerType == null || _allNeedsField == null ||
-                _needIdProperty == null || _setPointsMethod == null)
+            if (!NeedTraps.TryGetNeedId(trapName, out var needId))
             {
-                Debug.LogWarning("[Archipelago] NeedSystem not fully resolved — cannot set need");
-                return 0;
+                Debug.LogWarning($"[Archipelago] Unknown need trap: {trapName}");
+                return;
             }
 
-            // NeedManager extends BaseComponent but does not implement IRegisteredComponent
-            // (same as BonusManager / Inventory) — use EntityRegistry.Entities + per-entity
-            // GetComponent<T>() instead of EntityComponentRegistry.GetEnabled<T>().
-            var managers = FindEntityComponents(_needManagerType);
-
-            if (managers.Count == 0)
+            var tally = new NeedTraps.Tally();
+            string firstError = null;
+            try
             {
-                Debug.LogWarning("[Archipelago] No NeedManager instances found on entities");
-                return 0;
-            }
-
-            int count = 0;
-            foreach (var manager in managers)
-            {
-                try
+                foreach (var needManager in _entityComponentRegistry.GetEnabled<NeedManager>())
                 {
-                    var allNeeds = _allNeedsField.GetValue(manager);
-                    if (allNeeds == null) continue;
-
-                    foreach (var need in (System.Collections.IEnumerable)allNeeds)
+                    try
                     {
-                        var id = _needIdProperty.GetValue(need) as string;
-                        if (id == needId)
+                        if (!needManager.HasNeed(needId))
                         {
-                            _setPointsMethod.Invoke(need, new object[] { points });
-                            count++;
-                            break;
+                            tally.Skipped++;
+                            continue;
                         }
+
+                        var spec = needManager.GetNeedSpec(needId);
+                        if (!NeedTraps.AppliesTo(true, needManager.NeedIsEnabled(needId), spec.CharacterType))
+                        {
+                            tally.Skipped++;
+                            continue;
+                        }
+
+                        float before = needManager.GetNeedPoints(needId);
+                        if (!NeedTraps.TryPlanDrop(before, spec.MinimumValue, spec.MaximumValue, spec.Effectiveness,
+                                                   out var effectPoints, out _))
+                        {
+                            tally.AlreadyCritical++;
+                            continue;
+                        }
+
+                        var effect = new InstantEffect(needId, effectPoints, 1);
+                        needManager.ApplyEffect(in effect);
+
+                        if (needManager.GetNeedPoints(needId) < before) tally.Lowered++;
+                        else tally.Failed++;
+                    }
+                    catch (Exception ex)
+                    {
+                        tally.Failed++;
+                        firstError ??= ex.Message;
                     }
                 }
-                catch (Exception ex)
-                {
-                    Debug.LogWarning($"[Archipelago] SetNeed('{needId}') failed: {ex.InnerException?.Message ?? ex.Message}");
-                }
             }
-
-            return count;
-        }
-
-        private void EnsureNeedSystemResolved()
-        {
-            if (_needSystemSearched) return;
-            _needSystemSearched = true;
-
-            _needManagerType = FindType("Timberborn.NeedSystem.NeedManager");
-            var needType = FindType("Timberborn.NeedSystem.Need");
-
-            if (_needManagerType != null)
+            catch (Exception ex)
             {
-                // Property getter may fail due to ImmutableArray<> dependency,
-                // so access the auto-property backing field directly.
-                _allNeedsField = _needManagerType.GetField("<AllNeeds>k__BackingField",
-                    BindingFlags.Instance | BindingFlags.NonPublic);
+                firstError ??= ex.Message;
             }
 
-            if (needType != null)
-            {
-                _needIdProperty = needType.GetProperty("NeedId",
-                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                _setPointsMethod = needType.GetMethod("SetPoints",
-                    new[] { typeof(float) });
-            }
+            var tag = trapName.ToUpperInvariant().Replace(' ', '_');
+            Debug.Log($"[Archipelago/Trap] {tag} fired: need={needId}, target={NeedTraps.CriticalPoints}, " +
+                      $"{tally.Describe()}, cycle={_gameCycleService.Cycle}, day={_gameCycleService.CycleDay}" +
+                      (firstError != null ? $", firstError={firstError}" : ""));
 
-            Debug.Log($"[Archipelago] NeedSystem resolved: Manager={_needManagerType != null}, " +
-                      $"AllNeedsField={_allNeedsField != null}, NeedId={_needIdProperty != null}, " +
-                      $"SetPoints={_setPointsMethod != null}");
+            if (tally.Lowered == 0 && firstError != null)
+                ArchipelagoManager.PostLogMessage($"Trap: {trapName} (failed to apply)");
+            else
+                ArchipelagoManager.PostLogMessage($"Trap activated: {trapName}! ({tally.Lowered} beavers affected)");
         }
 
         // =================================================================
-        // Filler (resource injection)
+        // Filler (pending-goods ledger + storage delivery)
         // =================================================================
 
         private void HandleFiller(ApItem item)
         {
-            // Parse "Filler: 50 Logs" → amount=50, goodDisplayName="Logs"
-            var fillerText = item.ItemName.Substring("Filler: ".Length);
-            var match = Regex.Match(fillerText, @"^(\d+)\s+(.+)$");
-            if (!match.Success)
+            // "Package: Logs" → amount from slot_data (or base × resource_package_percent);
+            // legacy "Filler: 50 Logs" → 50 × percent. Seeds without the option are 100%.
+            RefreshPackageSettings();
+            if (!ResourcePackages.TryResolve(item.ItemName, _packagePercent, _slotPackages, out var delivery))
             {
-                Debug.LogWarning($"[Archipelago] Could not parse filler: {item.ItemName}");
+                Debug.LogWarning($"[Archipelago] Unknown resource item: {item.ItemName}");
                 return;
             }
 
-            int amount = int.Parse(match.Groups[1].Value);
-            string displayName = match.Groups[2].Value;
+            int amount = delivery.Amount;
+            string displayName = delivery.DisplayName;
+            string goodIdStr = delivery.GoodId;
 
-            if (!FillerGoodMapping.TryGetValue(displayName, out var goodIdStr))
-            {
-                Debug.LogWarning($"[Archipelago] Unknown filler good: {displayName}");
-                return;
-            }
-
-            try
-            {
-                InjectGoods(goodIdStr, amount);
-                Debug.Log($"[Archipelago] Injected {amount} {goodIdStr} into stockpiles");
-                ArchipelagoManager.PostLogMessage($"Received {amount} {displayName}!");
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning($"[Archipelago] Failed to inject {amount} {goodIdStr}: {ex.Message}");
-                ArchipelagoManager.PostLogMessage($"Received {amount} {displayName} (delivery failed)");
-            }
+            // Never touch inventories here: the goods wait in the saved ledger until
+            // a delivery pass finds finished storage with room for them.
+            _saveData.PendingGoods.Add(goodIdStr, amount);
+            _nextDeliveryTime = 0f; // try to deliver on the next frame
+            Debug.Log($"[Archipelago] Queued {amount} {goodIdStr} for delivery" +
+                      $"{(item.IsReplay ? " (replayed from server history)" : "")}; " +
+                      $"pending now: {_saveData.PendingGoods.Serialize()}");
+            if (!item.IsReplay)
+                ArchipelagoManager.PostReceivedItem(item, $"{amount} {displayName}");
         }
 
-        private void InjectGoods(string goodIdStr, int amount)
+        /// <summary>Display name for a filler good id ("Plank" → "Planks").</summary>
+        internal static string GoodDisplayName(string goodId) => ResourcePackages.GoodDisplayName(goodId);
+
+        /// <summary>
+        /// Reads resource_package_percent and resource_packages from slot_data once per
+        /// connection. Missing keys (seeds generated before the option) leave the
+        /// percent null and the table empty, which ResourcePackages treats as 100%.
+        /// </summary>
+        private void RefreshPackageSettings()
         {
-            EnsureInventorySystemResolved();
-
-            if (_goodAmountType == null)
-            {
-                Debug.LogWarning("[Archipelago] Could not find GoodAmount type for goods injection");
+            var slotData = ArchipelagoManager.SlotData;
+            if (slotData == null || ReferenceEquals(slotData, _packageSlotData))
                 return;
-            }
-            if (_inventoryType == null || _giveIgnoringCapacityMethod == null)
+            _packageSlotData = slotData;
+            _packagePercent = null;
+            _slotPackages = new Dictionary<string, (string goodId, int amount)>();
+
+            if (slotData.ContainsKey("resource_package_percent"))
+                _packagePercent = ApGoalTracker.GetIntFromSlotData(
+                    slotData, "resource_package_percent", ResourcePackages.DefaultPercent);
+
+            if (slotData.TryGetValue("resource_packages", out var packagesObj)
+                && packagesObj is Newtonsoft.Json.Linq.JObject packages)
             {
-                Debug.LogWarning("[Archipelago] Could not resolve Inventory.GiveIgnoringCapacity for goods injection");
-                return;
-            }
-
-            // GoodAmount(string goodId, int amount) — verified ctor signature
-            var goodAmount = Activator.CreateInstance(_goodAmountType, goodIdStr, amount);
-
-            // Inventory extends BaseComponent but does NOT implement IRegisteredComponent,
-            // so EntityComponentRegistry.GetEnabled<T>() via MakeGenericMethod throws
-            // ArgumentException at runtime (same crash as BonusManager). Instead iterate
-            // EntityRegistry.Entities and use BaseComponent.GetComponent<T>() per entity.
-            var inventories = FindEntityComponents(_inventoryType);
-
-            if (inventories.Count == 0)
-            {
-                Debug.LogWarning($"[Archipelago] No Inventory instances found — cannot inject {amount} {goodIdStr}");
-                return;
-            }
-
-            // Filter to public-input inventories only (stockpiles, ground piles).
-            // PublicInput=true distinguishes player-accessible storage from carry slots,
-            // construction material buffers, and internal building inventories. Without
-            // this filter, the first available inventory could be a beaver's carry slot
-            // or a workshop input buffer, leaving goods invisible to the player.
-            var publicInputs = new List<object>();
-            foreach (var inv in inventories)
-            {
-                try
-                {
-                    if (_publicInputProperty?.GetValue(inv) is bool pub && pub)
-                        publicInputs.Add(inv);
-                }
-                catch { /* skip on reflection issue */ }
-            }
-
-            // Among public-input inventories, prefer those that explicitly accept this good.
-            var accepting = new List<object>();
-            if (_givesMethod != null)
-            {
-                foreach (var inv in publicInputs)
+                foreach (var prop in packages.Properties())
                 {
                     try
                     {
-                        if (_givesMethod.Invoke(inv, new object[] { goodIdStr }) is bool gives && gives)
-                            accepting.Add(inv);
+                        var goodId = (string)prop.Value["good_id"];
+                        var amount = (int?)prop.Value["amount"] ?? 0;
+                        if (!string.IsNullOrEmpty(goodId) && amount > 0)
+                            _slotPackages[prop.Name] = (goodId, amount);
                     }
-                    catch { /* skip on reflection issue */ }
+                    catch (Exception ex)
+                    {
+                        Debug.LogWarning($"[Archipelago] Ignoring resource_packages entry {prop.Name}: {ex.Message}");
+                    }
                 }
             }
 
-            // Candidate priority: public-input + accepts good > any public-input > (last resort) any inventory.
-            // Never write to carry slots or internal buffers if we can avoid it.
-            List<object> candidates;
-            if (accepting.Count > 0)
-                candidates = accepting;
-            else if (publicInputs.Count > 0)
-                candidates = publicInputs;
-            else
-                candidates = inventories; // last resort — all inventories exhausted
-
-            bool injected = false;
-            foreach (var inventory in candidates)
-            {
-                try
-                {
-                    _giveIgnoringCapacityMethod.Invoke(inventory, new[] { goodAmount });
-                    injected = true;
-                    Debug.Log($"[Archipelago] Injected {amount} {goodIdStr} into a stockpile " +
-                              $"({accepting.Count} accepting / {publicInputs.Count} public of {inventories.Count} total)");
-                    break; // GiveIgnoringCapacity handles the full amount in one call
-                }
-                catch (Exception ex)
-                {
-                    // This inventory rejected the good — try next
-                    Debug.Log($"[Archipelago] Inventory rejected {goodIdStr}: {ex.InnerException?.Message ?? ex.Message}");
-                }
-            }
-
-            if (!injected)
-                Debug.LogWarning($"[Archipelago] Could not inject {amount} {goodIdStr} — no suitable inventory found " +
-                                 $"(accepting={accepting.Count}, public={publicInputs.Count}, total={inventories.Count})");
+            Debug.Log($"[Archipelago] Resource packages: percent={_packagePercent?.ToString() ?? "missing (100)"}, " +
+                      $"{_slotPackages.Count} package amounts from slot_data");
         }
 
-        private void EnsureInventorySystemResolved()
+        /// <summary>
+        /// Called every frame by ArchipelagoTicker. Every few seconds, while goods
+        /// are pending, moves as much as fits into finished public storage that
+        /// takes the good. The rest stays pending. Runs while disconnected too:
+        /// the ledger is local save state.
+        /// </summary>
+        public void ProcessPendingGoods()
         {
-            if (_inventorySystemSearched) return;
-            _inventorySystemSearched = true;
-
-            _goodAmountType = FindType("Timberborn.Goods.GoodAmount");
-            _inventoryType = FindType("Timberborn.InventorySystem.Inventory");
-
-            if (_inventoryType != null && _goodAmountType != null)
+            var ledger = _saveData.PendingGoods;
+            if (ledger.IsEmpty)
             {
-                // GiveIgnoringCapacity(GoodAmount good) — verified single-param signature
-                _giveIgnoringCapacityMethod = _inventoryType.GetMethod(
-                    "GiveIgnoringCapacity", new[] { _goodAmountType });
+                _lastPendingSummary = null;
+                return;
+            }
+            if (Time.unscaledTime < _nextDeliveryTime) return;
+            _nextDeliveryTime = Time.unscaledTime + DeliveryIntervalSeconds;
+
+            var deliveryMode = _saveData.DeliveryMode;
+            bool districtCenterFirst = deliveryMode == GoodsDeliveryMode.DistrictCenter;
+            if (_lastDeliveryMode != deliveryMode)
+            {
+                _lastDeliveryMode = deliveryMode;
+                Debug.Log($"[Archipelago] Delivery mode: {GoodsDeliveryOption.Describe(deliveryMode)} (goods_delivery)");
             }
 
-            if (_inventoryType != null)
+            List<IGoodsStorageSlot> slots;
+            DistrictCenterStorageSlot districtCenterSlot = null;
+            try
             {
-                // Gives(string goodId) — filters out inventories that don't accept a good
-                _givesMethod = _inventoryType.GetMethod("Gives", new[] { typeof(string) });
-                // PublicInput — true on stockpiles and ground piles; false on carry slots,
-                // construction buffers, and internal building inventories
-                _publicInputProperty = _inventoryType.GetProperty("PublicInput");
+                slots = new List<IGoodsStorageSlot>();
+                if (districtCenterFirst)
+                {
+                    districtCenterSlot = FindDeliveryDistrictCenter();
+                    if (districtCenterSlot != null) slots.Add(districtCenterSlot);
+                }
+                slots.AddRange(_entityComponentRegistry.GetEnabled<Stockpile>()
+                    .Where(stockpile => stockpile.Inventory != null)
+                    .Select(stockpile => (IGoodsStorageSlot)new StockpileStorageSlot(stockpile.Inventory)));
+            }
+            catch (Exception ex)
+            {
+                LogPendingOnce($"[Archipelago] Could not enumerate storage for pending goods: {ex.Message}", warning: true);
+                return;
             }
 
-            Debug.Log($"[Archipelago] InventorySystem resolved: Inventory={_inventoryType != null}, " +
-                      $"GoodAmount={_goodAmountType != null}, " +
-                      $"GiveIgnoringCapacity={_giveIgnoringCapacityMethod != null}, " +
-                      $"Gives={_givesMethod != null}, " +
-                      $"PublicInput={_publicInputProperty != null}");
+            var result = ledger.Deliver(slots, (slot, goodId, amount) =>
+            {
+                if (slot is DistrictCenterStorageSlot districtCenter)
+                    districtCenter.Inventory.GiveExistingIgnoringCapacity(new GoodAmount(goodId, amount));
+                else
+                    ((StockpileStorageSlot)slot).Inventory.GiveExisting(new GoodAmount(goodId, amount));
+            });
+
+            foreach (var delivered in result.Delivered.GroupBy(d => (d.GoodId, ToDistrictCenter: d.Slot is DistrictCenterStorageSlot)))
+            {
+                int total = delivered.Sum(d => d.Amount);
+                string goodId = delivered.Key.GoodId;
+                if (delivered.Key.ToDistrictCenter)
+                {
+                    var name = ((DistrictCenterStorageSlot)delivered.First().Slot).Name;
+                    Debug.Log($"[Archipelago] Delivery path=DistrictCenter: {total} {goodId} into '{name}' " +
+                              $"(now holds {districtCenterSlot?.Inventory.AmountInStock(goodId)}); still waiting: {ledger.Get(goodId)}");
+                    ArchipelagoManager.PostLogMessage($"Delivered {total} {GoodDisplayName(goodId)} to the District Center");
+                }
+                else
+                {
+                    Debug.Log($"[Archipelago] Delivery path=Stockpile: {total} {goodId} into " +
+                              $"{delivered.Count()} storage building(s); still waiting: {ledger.Get(goodId)}");
+                    ArchipelagoManager.PostLogMessage($"Delivered {total} {GoodDisplayName(goodId)} to storage");
+                }
+            }
+            foreach (var (delivery, error) in result.Failed)
+                Debug.LogWarning($"[Archipelago] {(delivery.Slot is DistrictCenterStorageSlot ? "District Center" : "Storage")} " +
+                                 $"rejected {delivery.Amount} {delivery.GoodId}; it stays pending: " +
+                                 $"{error.InnerException?.Message ?? error.Message}");
+
+            if (!ledger.IsEmpty)
+                LogPendingOnce($"[Archipelago] Delivery path=Pending: waiting for storage: {ledger.Serialize()} " +
+                               $"({(districtCenterSlot != null ? "District Center '" + districtCenterSlot.Name + "' and " : "")}" +
+                               $"{slots.Count - (districtCenterSlot != null ? 1 : 0)} finished stockpile(s) checked)", warning: false);
+            else
+                _lastPendingSummary = null;
+        }
+
+        /// <summary>
+        /// The finished District Center with the most beavers (first one on a tie),
+        /// or null when there is none or its output inventory is not active.
+        /// </summary>
+        private DistrictCenterStorageSlot FindDeliveryDistrictCenter()
+        {
+            DistrictCenter best = null;
+            Inventory bestInventory = null;
+            int bestPopulation = -1;
+            foreach (var districtCenter in _districtCenterRegistry.FinishedDistrictCenters)
+            {
+                if (districtCenter == null) continue;
+                var output = districtCenter.GetComponent<SimpleOutputInventory>();
+                var inventory = output != null ? output.Inventory : null;
+                if (inventory == null || !inventory.Enabled) continue;
+                var population = districtCenter.DistrictPopulation;
+                int count = population != null ? population.NumberOfAdults + population.NumberOfChildren : 0;
+                if (count > bestPopulation)
+                {
+                    best = districtCenter;
+                    bestInventory = inventory;
+                    bestPopulation = count;
+                }
+            }
+            return best == null ? null : new DistrictCenterStorageSlot(bestInventory, best.DistrictName);
+        }
+
+        /// <summary>Logs the waiting summary only when the pending amounts change, not every pass.</summary>
+        private void LogPendingOnce(string message, bool warning)
+        {
+            var summary = _saveData.PendingGoods.Serialize();
+            if (summary == _lastPendingSummary) return;
+            _lastPendingSummary = summary;
+            if (warning) Debug.LogWarning(message);
+            else Debug.Log(message);
+        }
+
+        /// <summary>
+        /// Game adapter for the District Center's output inventory
+        /// (SimpleOutputInventory: all goods allowed as output, PublicOutput, 20 per
+        /// good with ignorable capacity). It is not a public input, so the planner
+        /// flag reports true here on purpose: we deliver the way the game adds
+        /// starting goods, with GiveExistingIgnoringCapacity, and amounts over 20
+        /// count as unwanted stock that its workers haul out to storage.
+        /// </summary>
+        private sealed class DistrictCenterStorageSlot : IGoodsStorageSlot
+        {
+            public Inventory Inventory { get; }
+            public string Name { get; }
+
+            public DistrictCenterStorageSlot(Inventory inventory, string name)
+            {
+                Inventory = inventory;
+                Name = string.IsNullOrEmpty(name) ? "District Center" : name;
+            }
+
+            public bool PublicInput => true;
+
+            public bool Enabled => Inventory.Enabled;
+
+            // Gives() = the good is in the inventory's allowed output goods.
+            public bool Accepts(string goodId)
+            {
+                try { return Inventory.Gives(goodId); }
+                catch { return false; }
+            }
+
+            public int FreeCapacity(string goodId) => int.MaxValue;
+        }
+
+        /// <summary>Game adapter for the pending-goods planner: one stockpile inventory.</summary>
+        private sealed class StockpileStorageSlot : IGoodsStorageSlot
+        {
+            public Inventory Inventory { get; }
+
+            public StockpileStorageSlot(Inventory inventory)
+            {
+                Inventory = inventory;
+            }
+
+            public bool PublicInput => Inventory.PublicInput;
+
+            // Stockpile.OnEnterFinishedState enables the inventory; construction
+            // sites and demolished buildings have it disabled.
+            public bool Enabled => Inventory.Enabled;
+
+            public bool Accepts(string goodId)
+            {
+                try { return Inventory.Takes(goodId); }
+                catch { return false; }
+            }
+
+            // UnreservedCapacity honours the storage's good filter, total capacity
+            // and capacity already reserved by haulers on their way.
+            public int FreeCapacity(string goodId)
+            {
+                try { return Inventory.UnreservedCapacity(goodId); }
+                catch { return 0; }
+            }
         }
 
         // =================================================================

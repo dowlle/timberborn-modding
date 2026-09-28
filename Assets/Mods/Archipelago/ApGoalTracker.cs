@@ -1,9 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
-using System.Reflection;
 using Newtonsoft.Json.Linq;
 using Timberborn.GameWonderCompletion;
-using Timberborn.HazardousWeatherSystem;
 using Timberborn.Population;
 using Timberborn.ResourceCountingSystem;
 using Timberborn.SingletonSystem;
@@ -34,8 +32,8 @@ namespace ArchipelagoIntegration
 
         private readonly PopulationService _populationService;
         private readonly WellbeingService _wellbeingService;
-        private readonly HazardousWeatherHistory _weatherHistory;
-        private readonly GameWonderCompletionService _wonderService;
+        private readonly HazardSurvivalTracker _survival;
+        private readonly WonderCompletionCountdownStarter _wonderCountdown;
         private readonly ResourceCountingService _resourceCountingService;
         private readonly ArchipelagoSaveData _saveData;
 
@@ -49,21 +47,18 @@ namespace ArchipelagoIntegration
         // Population mode: 0 = beavers_only, 1 = bots_only, 2 = beavers_and_bots
         private int _populationMode;
 
-        // Cached reflection for wonder
-        private MethodInfo _isWonderCompletedMethod;
-
         public ApGoalTracker(
             PopulationService populationService,
             WellbeingService wellbeingService,
-            HazardousWeatherHistory weatherHistory,
-            GameWonderCompletionService wonderService,
+            HazardSurvivalTracker survival,
+            WonderCompletionCountdownStarter wonderCountdown,
             ResourceCountingService resourceCountingService,
             ArchipelagoSaveData saveData)
         {
             _populationService = populationService;
             _wellbeingService = wellbeingService;
-            _weatherHistory = weatherHistory;
-            _wonderService = wonderService;
+            _survival = survival;
+            _wonderCountdown = wonderCountdown;
             _resourceCountingService = resourceCountingService;
             _saveData = saveData;
         }
@@ -187,20 +182,9 @@ namespace ArchipelagoIntegration
 
         private bool EvaluateWonder()
         {
-            if (_isWonderCompletedMethod == null)
-            {
-                _isWonderCompletedMethod = _wonderService.GetType().GetMethod(
-                    "IsWonderCompletedWithCurrentFaction",
-                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-
-                if (_isWonderCompletedMethod == null)
-                {
-                    Debug.LogWarning("[Archipelago] Could not find IsWonderCompletedWithCurrentFaction method");
-                    return false;
-                }
-            }
-
-            return (bool)_isWonderCompletedMethod.Invoke(_wonderService, null);
+            // Saved per game; the player-profile check would also count a wonder
+            // finished in an earlier game on the same map with the same faction.
+            return _wonderCountdown.CountdownFinished;
         }
 
         private bool EvaluatePopulation(int threshold)
@@ -243,17 +227,10 @@ namespace ArchipelagoIntegration
             return resourceCount.AllStock >= threshold;
         }
 
-        private bool EvaluateDroughts(int threshold)
-        {
-            int count = _weatherHistory.GetCyclesCount("DroughtWeather");
-            return count >= threshold;
-        }
+        // Hazards count when they end, and only those after the save was bound to the slot.
+        private bool EvaluateDroughts(int threshold) => _survival.SurvivedDroughts >= threshold;
 
-        private bool EvaluateBadtides(int threshold)
-        {
-            int count = _weatherHistory.GetCyclesCount("BadtideWeather");
-            return count >= threshold;
-        }
+        private bool EvaluateBadtides(int threshold) => _survival.SurvivedBadtides >= threshold;
 
         private bool EvaluateWellbeing(int threshold)
         {

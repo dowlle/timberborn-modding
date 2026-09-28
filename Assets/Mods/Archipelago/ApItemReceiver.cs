@@ -107,14 +107,14 @@ namespace ArchipelagoIntegration
             // Handle Skip items — lost on restart (not idempotent)
             if (item.ItemName == "Skip")
             {
-                if (item.IsReplay)
+                if (item.IsReplay && ItemReplayTracker.SkipsOnReplay(item.ItemName))
                 {
                     Debug.Log($"[Archipelago] Skipping replay Skip item (index {item.ItemIndex})");
                     return;
                 }
                 _saveData.SkipsAvailable++;
                 Debug.Log($"[Archipelago] Received Skip item (total: {_saveData.SkipsAvailable}) from {item.SenderName}");
-                ArchipelagoManager.PostLogMessage($"Received Skip from {item.SenderName} (total: {_saveData.SkipsAvailable})");
+                ArchipelagoManager.PostReceivedItem(item, "Skip", $" (total: {_saveData.SkipsAvailable})");
                 return;
             }
 
@@ -141,7 +141,7 @@ namespace ArchipelagoIntegration
                         {
                             _buildingUnlockingService.UnlockIgnoringCost(progSpec);
                             Debug.Log($"[Archipelago] Progressive unlock: {item.ItemName} → {buildingName} (from {item.SenderName})");
-                            ArchipelagoManager.PostLogMessage($"Received {item.ItemName} ({buildingName}) from {item.SenderName}");
+                            ArchipelagoManager.PostReceivedItem(item, $"{item.ItemName} ({buildingName})");
                         }
                         catch (Exception ex)
                         {
@@ -171,7 +171,7 @@ namespace ArchipelagoIntegration
                 {
                     _buildingUnlockingService.UnlockIgnoringCost(spec);
                     Debug.Log($"[Archipelago] Unlocked building: {item.ItemName} (from {item.SenderName})");
-                    ArchipelagoManager.PostLogMessage($"Received {item.ItemName} from {item.SenderName}");
+                    ArchipelagoManager.PostReceivedItem(item, item.ItemName);
                 }
                 catch (Exception ex)
                 {
@@ -184,15 +184,15 @@ namespace ArchipelagoIntegration
             }
             else
             {
-                // During replay, skip filler (already consumed) and traps (unfair on fresh start)
+                // During replay, skip traps (unfair on a fresh start). Filler replays
+                // into the pending-goods ledger: ProcessedItemIndex already stops items
+                // this save has handled from reaching here, so a new game gets every
+                // received resource back and a reload never adds the same item twice.
                 // Boosts are handled idempotently by ApEffectHandler via ActiveBoosts check
-                if (item.IsReplay)
+                if (item.IsReplay && ItemReplayTracker.SkipsOnReplay(item.ItemName))
                 {
-                    if (item.ItemName.StartsWith("Filler: ") || item.ItemName.StartsWith("Trap: "))
-                    {
-                        Debug.Log($"[Archipelago] Skipping replay {item.ItemName} (index {item.ItemIndex})");
-                        return;
-                    }
+                    Debug.Log($"[Archipelago] Skipping replay {item.ItemName} (index {item.ItemIndex})");
+                    return;
                 }
 
                 // Route non-blueprint items (filler, traps, boosts) to effect handler
@@ -203,7 +203,7 @@ namespace ArchipelagoIntegration
                 else
                 {
                     Debug.Log($"[Archipelago] Received non-blueprint item: {item.ItemName} (from {item.SenderName})");
-                    ArchipelagoManager.PostLogMessage($"Received {item.ItemName} from {item.SenderName}");
+                    ArchipelagoManager.PostReceivedItem(item, item.ItemName);
                 }
             }
         }

@@ -26,6 +26,7 @@ namespace ArchipelagoIntegration
         private Label _scienceLabel;
         private Label _statusLabel;
         private Label _skipsLabel;
+        private Label _pendingGoodsLabel;
         private Label _placeholder;
 
         private VisualElement _branchContainer;
@@ -74,6 +75,14 @@ namespace ArchipelagoIntegration
             _scienceLabel = _root.Q<Label>("ScienceLabel");
             _statusLabel = _root.Q<Label>("ShopStatus");
             _skipsLabel = _root.Q<Label>("SkipsLabel");
+
+            // Received goods still waiting for finished storage, below the status bar
+            _pendingGoodsLabel = new Label();
+            _pendingGoodsLabel.AddToClassList("ap-connect__status");
+            _pendingGoodsLabel.style.marginTop = 4;
+            var statusParent = _statusLabel.parent;
+            statusParent.Insert(statusParent.IndexOf(_statusLabel) + 1, _pendingGoodsLabel);
+            UpdatePendingGoodsLabel();
 
             _branchContainer = _root.Q<VisualElement>("BranchContainer");
             _branchContainer.style.display = DisplayStyle.None;
@@ -136,6 +145,7 @@ namespace ArchipelagoIntegration
             ArchipelagoSaveData.OnShopLayoutAvailable += OnShopLayoutAvailable;
             ArchipelagoManager.OnItemReceived += OnItemReceived;
             ArchipelagoManager.OnConnectionChanged += OnConnectionChanged;
+            _saveData.PendingGoods.Changed += UpdatePendingGoodsLabel;
 
             UpdateConnectionButtons();
             Debug.Log("[Archipelago] AP Shop ready — waiting for layout.");
@@ -146,7 +156,11 @@ namespace ArchipelagoIntegration
             ArchipelagoSaveData.OnShopLayoutAvailable -= OnShopLayoutAvailable;
             ArchipelagoManager.OnItemReceived -= OnItemReceived;
             ArchipelagoManager.OnConnectionChanged -= OnConnectionChanged;
+            _saveData.PendingGoods.Changed -= UpdatePendingGoodsLabel;
         }
+
+        /// <summary>Root of the game's UI tree (the shop is reparented there in Load).</summary>
+        internal VisualElement VisualTreeRoot => _root?.panel?.visualTree;
 
         public void Show()
         {
@@ -290,12 +304,14 @@ namespace ArchipelagoIntegration
             string faction = ApBuildingLocations.GetFaction();
             if (!ApBuildingLocations.IsTierUnlocked(entry.Slot.Tier, _saveData.ReceivedItems, faction))
                 return false;
+            if (!ApBuildingLocations.HasBuildingPrerequisites(entry.Slot.BuildingName, _saveData.ReceivedItems, faction))
+                return false;
 
             if (entry.Index == 0)
                 return true;
 
             var prev = _pathSlots[entry.Path][entry.Index - 1];
-            return IsBranchSlotChecked(prev);
+            return IsBranchSlotChecked(prev) && _saveData.ReceivedItems.Contains("Blueprint: Forester");
         }
 
         private bool CanPurchaseBranchSlot(BranchSlotEntry entry)
@@ -307,9 +323,15 @@ namespace ArchipelagoIntegration
             return true;
         }
 
-        private static string GetTierRequirementText(int tier)
+        /// <summary>What the slot still needs; never reveals the item it holds.</summary>
+        private string GetLockReason(BranchSlotEntry entry)
         {
-            return ApBuildingLocations.GetTierRequirementText(tier, ApBuildingLocations.GetFaction());
+            bool previousChecked = entry.Index == 0
+                || IsBranchSlotChecked(_pathSlots[entry.Path][entry.Index - 1]);
+            return ApBuildingLocations.DescribeShopLock(
+                entry.Slot.Tier, entry.Slot.BuildingName, entry.Index == 0, previousChecked,
+                entry.Slot.Price, _scienceService.SciencePoints, _saveData.ReceivedItems,
+                ApBuildingLocations.GetFaction());
         }
 
         // =================================================================
@@ -356,6 +378,7 @@ namespace ArchipelagoIntegration
             _statusLabel.text = ArchipelagoManager.IsConnected
                 ? $"Connected as {ArchipelagoManager.CurrentSlot}"
                 : "Not connected";
+            UpdatePendingGoodsLabel();
 
             if (_pathCards.Count == 0) return;
 
@@ -398,7 +421,7 @@ namespace ArchipelagoIntegration
                     card.BuyButton.style.display = DisplayStyle.Flex;
                     card.BuyButton.SetEnabled(false);
                     card.SkipButton.style.display = DisplayStyle.None;
-                    card.StatusLabel.text = GetTierRequirementText(next.Slot.Tier);
+                    card.StatusLabel.text = GetLockReason(next);
                     card.StatusLabel.style.display = DisplayStyle.Flex;
                     card.Container.RemoveFromClassList("ap-shop__path-card--available");
                     card.Container.RemoveFromClassList("ap-shop__path-card--complete");
@@ -420,7 +443,9 @@ namespace ArchipelagoIntegration
                     card.SkipButton.style.display = (_saveData.SkipsAvailable > 0)
                         ? DisplayStyle.Flex : DisplayStyle.None;
                     card.SkipButton.SetEnabled(connected);
-                    card.StatusLabel.style.display = DisplayStyle.None;
+                    // Only science can be missing here: "Needs: 120 science".
+                    card.StatusLabel.text = canAfford ? "" : GetLockReason(next);
+                    card.StatusLabel.style.display = canAfford ? DisplayStyle.None : DisplayStyle.Flex;
                     card.Container.RemoveFromClassList("ap-shop__path-card--locked");
                     card.Container.RemoveFromClassList("ap-shop__path-card--complete");
                     card.Container.AddToClassList("ap-shop__path-card--available");
@@ -459,6 +484,16 @@ namespace ArchipelagoIntegration
         // =================================================================
         // Event handlers
         // =================================================================
+
+        private void UpdatePendingGoodsLabel()
+        {
+            if (_pendingGoodsLabel == null) return;
+            var pending = _saveData.PendingGoods;
+            _pendingGoodsLabel.text = pending.IsEmpty
+                ? ""
+                : $"Waiting for storage: {pending.Describe(ApEffectHandler.GoodDisplayName)}";
+            _pendingGoodsLabel.style.display = pending.IsEmpty ? DisplayStyle.None : DisplayStyle.Flex;
+        }
 
         private void OnItemReceived(ApItem item)
         {

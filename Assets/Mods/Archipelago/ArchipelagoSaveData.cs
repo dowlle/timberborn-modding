@@ -31,6 +31,7 @@ namespace ArchipelagoIntegration
     /// - Received AP items (tier gate state)
     /// - Shop layout (from slot_data, for branching shop)
     /// - Skips available
+    /// - Received goods still waiting for storage (PendingGoods)
     /// </summary>
     public class ArchipelagoSaveData : ISaveableSingleton, ILoadableSingleton, IUnloadableSingleton
     {
@@ -57,7 +58,11 @@ namespace ArchipelagoIntegration
         private static readonly PropertyKey<string> ScoutedPathsKey = new("ScoutedPaths");
         private static readonly PropertyKey<int> BaselineDroughtKey = new("BaselineDroughtCount");
         private static readonly PropertyKey<int> BaselineBadtideKey = new("BaselineBadtideCount");
+        private static readonly PropertyKey<int> SurvivedDroughtsKey = new("SurvivedDroughts");
+        private static readonly PropertyKey<int> SurvivedBadtidesKey = new("SurvivedBadtides");
         private static readonly PropertyKey<string> ShopPlacementsKey = new("ShopPlacements");
+        private static readonly PropertyKey<string> PendingGoodsKey = new("PendingGoods");
+        private static readonly PropertyKey<int> GoodsDeliveryKey = new("GoodsDelivery");
 
         /// <summary>Fired when ShopLayout becomes available (from save or slot_data).</summary>
         public static event Action OnShopLayoutAvailable;
@@ -127,6 +132,13 @@ namespace ArchipelagoIntegration
         public int BaselineBadtideCount { get; set; } = -1;
 
         /// <summary>
+        /// Droughts and badtides that ended while this save was bound to a slot
+        /// (-1 = not counting yet). Kept by HazardSurvivalTracker.
+        /// </summary>
+        public int SurvivedDroughts { get; set; } = HazardSurvival.NotTracking;
+        public int SurvivedBadtides { get; set; } = HazardSurvival.NotTracking;
+
+        /// <summary>
         /// Progressive item chains from slot_data.
         /// Maps progressive item name → ordered list of building names.
         /// </summary>
@@ -153,6 +165,12 @@ namespace ArchipelagoIntegration
         /// <summary>Whether the overall goal has been achieved (sent to server).</summary>
         public bool GoalAchieved { get; set; }
 
+        /// <summary>
+        /// Where received goods go (goods_delivery option). Refreshed from slot_data on
+        /// every connect and saved, so delivery keeps the mode while disconnected.
+        /// </summary>
+        public GoodsDeliveryMode DeliveryMode { get; set; } = GoodsDeliveryOption.Default;
+
         /// <summary>Active boost names, persisted so they survive save/load and re-apply on game start.</summary>
         public HashSet<string> ActiveBoosts { get; } = new();
 
@@ -166,6 +184,13 @@ namespace ArchipelagoIntegration
         /// Falls back to ShopSlot.BuildingName when absent (v0.0.5.x backward-compat).
         /// </summary>
         public Dictionary<string, string> ShopPlacements { get; private set; } = new();
+
+        /// <summary>
+        /// Received goods not yet delivered into storage. Saved together with
+        /// ProcessedItemIndex, so a reload restores exactly the goods whose items
+        /// the save has already processed; later items replay into it.
+        /// </summary>
+        internal PendingGoodsLedger PendingGoods { get; } = new();
 
         public ArchipelagoSaveData(ISingletonLoader singletonLoader, FactionService factionService)
         {
@@ -213,6 +238,8 @@ namespace ArchipelagoIntegration
                 // (and any future static AP state) leaks across save loads and causes
                 // items to be silently skipped in the new slot.
                 ArchipelagoManager.ProcessedItemIndex = 0;
+                // New colony: its first connect replays the slot's item history.
+                ArchipelagoManager.ReplayHistoryOnNextConnect = true;
                 return;
             }
 
@@ -227,7 +254,8 @@ namespace ArchipelagoIntegration
             // are empty on broken saves, so replay is idempotent.
             bool hasReceivedItems = loader.Has(ReceivedItemsKey)
                 && !string.IsNullOrEmpty(loader.Get(ReceivedItemsKey));
-            if (savedIndex > 0 && !hasReceivedItems)
+            bool healedOrphanedIndex = savedIndex > 0 && !hasReceivedItems;
+            if (healedOrphanedIndex)
             {
                 Debug.LogWarning($"[Archipelago] Detected orphaned ProcessedItemIndex={savedIndex} with no applied items in save (likely from a pre-fix carryover bug). Resetting to 0 so the item history replays correctly.");
                 savedIndex = 0;
@@ -243,6 +271,12 @@ namespace ArchipelagoIntegration
                 _savedSlot = loader.Get(SlotKey);
             if (loader.Has(SeedKey))
                 _savedSeed = loader.Get(SeedKey);
+
+            // A save that never connected (or was healed above) replays the slot's
+            // history on its first connect. A save bound to a slot applies everything
+            // past ProcessedItemIndex as new items, so nothing is replayed twice.
+            ArchipelagoManager.ReplayHistoryOnNextConnect = ItemReplayTracker.IsFreshSave(
+                savedIndex, !string.IsNullOrEmpty(_savedSlot), healedOrphanedIndex);
 
             // Restore shop state
             if (loader.Has(CheckedLocsKey))
@@ -275,7 +309,7 @@ namespace ArchipelagoIntegration
             {
                 var raw = loader.Get(MilestonesKey);
                 if (!string.IsNullOrEmpty(raw))
-                    Milestones = DeserializeMilestones(raw);
+                    Milestones = MilestoneCodec.Deserialize(raw);
             }
             if (loader.Has(CheckedMilestonesKey))
             {
@@ -289,6 +323,10 @@ namespace ArchipelagoIntegration
                 BaselineDroughtCount = loader.Get(BaselineDroughtKey);
             if (loader.Has(BaselineBadtideKey))
                 BaselineBadtideCount = loader.Get(BaselineBadtideKey);
+            if (loader.Has(SurvivedDroughtsKey))
+                SurvivedDroughts = loader.Get(SurvivedDroughtsKey);
+            if (loader.Has(SurvivedBadtidesKey))
+                SurvivedBadtides = loader.Get(SurvivedBadtidesKey);
 
             // Restore progressive chains and counters
             if (loader.Has(ProgressiveChainsKey))
@@ -324,6 +362,8 @@ namespace ArchipelagoIntegration
             }
             if (loader.Has(GoalAchievedKey))
                 GoalAchieved = loader.Get(GoalAchievedKey) == 1;
+            if (loader.Has(GoodsDeliveryKey))
+                DeliveryMode = GoodsDeliveryOption.FromSaveValue(loader.Get(GoodsDeliveryKey));
             if (loader.Has(ActiveBoostsKey))
             {
                 var raw = loader.Get(ActiveBoostsKey);
@@ -344,13 +384,16 @@ namespace ArchipelagoIntegration
                 if (!string.IsNullOrEmpty(raw))
                     ShopPlacements = DeserializeShopPlacements(raw);
             }
+            if (loader.Has(PendingGoodsKey))
+                PendingGoods.Load(loader.Get(PendingGoodsKey));
 
             Debug.Log($"[Archipelago] Loaded save data: ProcessedItemIndex={ArchipelagoManager.ProcessedItemIndex}, " +
                       $"CheckedLocs={CheckedLocations.Count}, ReceivedItems={ReceivedItems.Count}, " +
                       $"ShopSlots={ShopLayout?.Count ?? 0}, Skips={SkipsAvailable}, " +
                       $"Milestones={Milestones?.Count ?? 0}, CheckedMilestones={CheckedMilestoneIds.Count}, " +
                       $"ProgressiveChains={ProgressiveChains.Count}, " +
-                      $"Goals={Goals?.Count ?? 0}, CompletedGoals={CompletedGoals.Count}, GoalAchieved={GoalAchieved}");
+                      $"Goals={Goals?.Count ?? 0}, CompletedGoals={CompletedGoals.Count}, GoalAchieved={GoalAchieved}, " +
+                      $"PendingGoods=[{PendingGoods.Serialize()}]");
 
             if (ShopLayout != null && ShopLayout.Count > 0)
                 OnShopLayoutAvailable?.Invoke();
@@ -409,6 +452,12 @@ namespace ArchipelagoIntegration
             }
 
             Debug.Log($"[Archipelago] SaveData.OnConnectionChanged — ShopLayout null={ShopLayout == null}, count={ShopLayout?.Count ?? -1}");
+
+            // slot_data decides the delivery mode; seeds without the option get the District Center.
+            DeliveryMode = GoodsDeliveryOption.FromSlotData(slotData);
+            Debug.Log($"[Archipelago] Goods delivery: {GoodsDeliveryOption.Describe(DeliveryMode)} " +
+                      $"(slot_data {GoodsDeliveryOption.SlotDataKey}" +
+                      $"{(slotData != null && slotData.ContainsKey(GoodsDeliveryOption.SlotDataKey) ? "" : " missing, default")})");
 
             // Parse shop layout from slot_data if we don't already have one
             if (ShopLayout == null || ShopLayout.Count == 0)
@@ -470,6 +519,13 @@ namespace ArchipelagoIntegration
             {
                 GoalAchieved = true;
                 Debug.Log("[Archipelago] Goal already completed on server — restored");
+            }
+            else if (GoalAchieved && !ArchipelagoManager.IsGoalCompleted())
+            {
+                // The goal was reached, but the send failed and the game closed before
+                // the in-memory retry ran. Send it again now.
+                Debug.Log("[Archipelago] Goal reached in this save but not on the server — sending it again");
+                ArchipelagoManager.SendGoalCompleted();
             }
         }
 
@@ -600,13 +656,17 @@ namespace ArchipelagoIntegration
 
             // Persist milestones
             if (Milestones != null && Milestones.Count > 0)
-                saver.Set(MilestonesKey, SerializeMilestones(Milestones));
+                saver.Set(MilestonesKey, MilestoneCodec.Serialize(Milestones));
             if (CheckedMilestoneIds.Count > 0)
                 saver.Set(CheckedMilestonesKey, string.Join("|", CheckedMilestoneIds));
             if (BaselineDroughtCount >= 0)
                 saver.Set(BaselineDroughtKey, BaselineDroughtCount);
             if (BaselineBadtideCount >= 0)
                 saver.Set(BaselineBadtideKey, BaselineBadtideCount);
+            if (SurvivedDroughts >= 0)
+                saver.Set(SurvivedDroughtsKey, SurvivedDroughts);
+            if (SurvivedBadtides >= 0)
+                saver.Set(SurvivedBadtidesKey, SurvivedBadtides);
 
             // Persist progressive chains and counters
             if (ProgressiveChains.Count > 0)
@@ -622,12 +682,15 @@ namespace ArchipelagoIntegration
             if (CompletedGoals.Count > 0)
                 saver.Set(CompletedGoalsKey, string.Join("|", CompletedGoals));
             saver.Set(GoalAchievedKey, GoalAchieved ? 1 : 0);
+            saver.Set(GoodsDeliveryKey, GoodsDeliveryOption.ToSaveValue(DeliveryMode));
             if (ActiveBoosts.Count > 0)
                 saver.Set(ActiveBoostsKey, string.Join("|", ActiveBoosts));
             if (ScoutedPaths.Count > 0)
                 saver.Set(ScoutedPathsKey, string.Join("|", ScoutedPaths));
             if (ShopPlacements.Count > 0)
                 saver.Set(ShopPlacementsKey, SerializeShopPlacements(ShopPlacements));
+            if (!PendingGoods.IsEmpty)
+                saver.Set(PendingGoodsKey, PendingGoods.Serialize());
         }
 
         /// <summary>
@@ -734,36 +797,6 @@ namespace ArchipelagoIntegration
             }
 
             Debug.Log($"[Archipelago] Parsed {result.Count} shop slots from slot_data");
-            return result;
-        }
-
-        // -----------------------------------------------------------------
-        // Milestone serialization (compact format)
-        // Format per milestone: "Name,LocationId,Type,Threshold"
-        // Milestones separated by ";"
-        // -----------------------------------------------------------------
-
-        private static string SerializeMilestones(List<MilestoneDefinition> milestones)
-        {
-            return string.Join(";", milestones.Select(m =>
-                $"{m.Name},{m.LocationId},{m.Type},{m.Threshold}"));
-        }
-
-        private static List<MilestoneDefinition> DeserializeMilestones(string raw)
-        {
-            var result = new List<MilestoneDefinition>();
-            foreach (var entry in raw.Split(';'))
-            {
-                var parts = entry.Split(',');
-                if (parts.Length < 4) continue;
-                result.Add(new MilestoneDefinition
-                {
-                    Name = parts[0],
-                    LocationId = long.Parse(parts[1]),
-                    Type = parts[2],
-                    Threshold = int.Parse(parts[3]),
-                });
-            }
             return result;
         }
 

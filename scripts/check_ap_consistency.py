@@ -9,10 +9,10 @@ Two failure modes have shipped to players so far, both silent:
      permanently unbuildable. This cost a live async player their Wonder goal
      (v0.0.5.2 hotfix) and later turned out to affect Sluice too.
 
-  2. UNRESOLVED TEMPLATE ID. VanillaUnlockBlocker looks buildings up by internal
-     template id. If a game update renames one, the lookup misses and the
-     building silently stays unlocked -- free to build, never routed through AP.
-     Timberborn 1.1 renames four and removes one, breaking several entries.
+  2. UNRESOLVED TEMPLATE ID. VanillaUnlockBlocker looks buildings up through
+     TemplateNameMapper, which accepts canonical names and compatibility aliases.
+     A truly unresolved name leaves a building outside AP's unlock handling.
+     Timberborn 1.1 retains aliases for renamed buildings, including Valve.
 
 Note these are DIFFERENT defects needing different checks. A startup warning for
 unresolved ids does not catch case 1, because there the template resolves fine
@@ -38,6 +38,7 @@ Unity import.
 """
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -90,22 +91,40 @@ def read_apworld_items(path):
         return set(ITEM_RE.findall(fh.read()))
 
 
-def read_blueprint_ids(path):
-    """Return the set of 'Template.Faction' ids found in a blueprint source."""
-    ids = set()
+def read_blueprint_templates(path):
+    """Map canonical names and same-faction aliases to canonical templates.
+
+    TemplateNameMapper registers canonical names first, then compatibility
+    aliases. Filenames alone do not describe its lookup behavior. Restrict
+    aliases to their target's faction so another faction cannot hide a gap.
+    """
     if zipfile.is_zipfile(path):
-        names = zipfile.ZipFile(path).namelist()
+        with zipfile.ZipFile(path) as archive:
+            blueprints = [json.loads(archive.read(name))
+                          for name in sorted(archive.namelist())
+                          if name.endswith(".blueprint.json")]
     else:
-        names = []
+        blueprints = []
         for root, _, files in os.walk(path):
-            names.extend(files)
-    for name in names:
-        base = os.path.basename(name)
-        if base.endswith(".blueprint.json"):
-            stem = base[: -len(".blueprint.json")]
-            if "." in stem:
-                ids.add(stem)
-    return ids
+            for name in sorted(files):
+                if name.endswith(".blueprint.json"):
+                    with open(os.path.join(root, name), "rb") as fh:
+                        blueprints.append(json.load(fh))
+
+    specs = [data["TemplateSpec"] for data in blueprints
+             if "BuildingSpec" in data and "TemplateSpec" in data]
+    canonical = {spec["TemplateName"] for spec in specs}
+    resolved = {name: name for name in canonical}
+    for spec in specs:
+        target = spec["TemplateName"]
+        faction = target.rsplit(".", 1)[-1]
+        for alias in spec.get("BackwardCompatibleTemplateNames", []):
+            if alias in canonical or alias.rsplit(".", 1)[-1] != faction:
+                continue
+            if alias in resolved and resolved[alias] != target:
+                raise ValueError("ambiguous blueprint alias: %s" % alias)
+            resolved[alias] = target
+    return resolved
 
 
 def check_blocked_without_item(entries, items):
@@ -128,20 +147,37 @@ def check_blocked_without_item(entries, items):
     return True
 
 
-def check_templates_resolve(entries, blueprint_ids):
+def check_templates_resolve(entries, templates):
     missing = sorted({
         "%s.%s" % (template, faction)
         for template, faction, _ in entries
-        if "%s.%s" % (template, faction) not in blueprint_ids
+        if "%s.%s" % (template, faction) not in templates
     })
     if missing:
         print("FAIL: blocker entries that do not resolve against the blueprints.")
-        print("      Each stays unlocked and free to build, bypassing AP entirely.")
+        print("      No canonical name or same-faction compatibility alias exists.")
         for name in missing:
             print("        - %s" % name)
         print("      Fix: update the template id, or drop the entry if the")
         print("      building was removed from the game.")
         return False
+
+    targets = {}
+    aliases = []
+    for template, faction, display in entries:
+        name = "%s.%s" % (template, faction)
+        target = templates[name]
+        targets.setdefault(target, []).append(name)
+        if target != name:
+            aliases.append((name, target))
+    duplicates = {target: names for target, names in targets.items() if len(names) > 1}
+    if duplicates:
+        print("FAIL: multiple AP entries resolve to the same building.")
+        for target, names in sorted(duplicates.items()):
+            print("        - %s: %s" % (target, ", ".join(names)))
+        return False
+    for name, target in sorted(aliases):
+        print("ALIAS: %s -> %s" % (name, target))
     print("OK  : all %d blocker template ids resolve against the blueprints."
           % len(entries))
     return True
@@ -194,8 +230,12 @@ def main():
             print("FAIL: --blueprints path does not exist: %s" % args.blueprints)
             ok = False
         else:
-            ok = check_templates_resolve(
-                entries, read_blueprint_ids(args.blueprints)) and ok
+            try:
+                templates = read_blueprint_templates(args.blueprints)
+                ok = check_templates_resolve(entries, templates) and ok
+            except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as exc:
+                print("FAIL: could not read blueprint templates: %s" % exc)
+                ok = False
     else:
         print("SKIP: template-resolution check (pass --blueprints to enable).")
 
