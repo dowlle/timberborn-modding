@@ -88,6 +88,10 @@ modding tools, see [LICENSE](LICENSE). The Archipelago code under
 `Assets/Mods/Archipelago/` is offered under those same terms. Bundled
 third-party components keep their own licenses, notably
 `Archipelago.MultiClient.Net`.
+The Archipelago logo on the shop button and on locked-building costs
+(`Assets/Mods/Archipelago/AssetBundles/Resources/Sprites/BottomBar/ApShopTool.png`)
+is the official logo from the [Archipelago](https://github.com/ArchipelagoMW/Archipelago)
+project (`data/icon.png`), used under its MIT license.
 
 ## Contact
 
