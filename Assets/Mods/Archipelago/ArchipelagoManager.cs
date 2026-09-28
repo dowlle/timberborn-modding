@@ -124,7 +124,11 @@ namespace ArchipelagoIntegration
 
             Disconnect();
 
-            _session = ArchipelagoSessionFactory.CreateSession(host, port);
+            // localhost goes straight to 127.0.0.1 over ws:// (slow ::1 and wss attempts timed out)
+            var endpoint = ApHostAddress.ForConnect(host);
+            if (endpoint != host)
+                Debug.Log($"[Archipelago] Connecting to '{endpoint}' for host '{host}'.");
+            _session = ArchipelagoSessionFactory.CreateSession(endpoint, port);
             _session.Items.ItemReceived  += OnNetworkItemReceived;
             _session.Socket.SocketClosed += OnSocketClosed;
             _session.MessageLog.OnMessageReceived += OnServerMessageReceived;
