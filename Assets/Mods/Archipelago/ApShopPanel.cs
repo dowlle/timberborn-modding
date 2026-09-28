@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using Timberborn.CoreUI;
+using Timberborn.InputSystem;
 using Timberborn.ScienceSystem;
 using Timberborn.SingletonSystem;
 using Timberborn.UILayoutSystem;
@@ -21,6 +22,7 @@ namespace ArchipelagoIntegration
         private readonly VisualElementLoader _visualElementLoader;
         private readonly ScienceService _scienceService;
         private readonly ArchipelagoSaveData _saveData;
+        private readonly ApTextInputGuard _textInputGuard;
 
         private VisualElement _root;
         private Label _scienceLabel;
@@ -46,12 +48,15 @@ namespace ArchipelagoIntegration
             UILayout uiLayout,
             VisualElementLoader visualElementLoader,
             ScienceService scienceService,
-            ArchipelagoSaveData saveData)
+            ArchipelagoSaveData saveData,
+            InputBlocker inputBlocker,
+            InputService inputService)
         {
             _uiLayout = uiLayout;
             _visualElementLoader = visualElementLoader;
             _scienceService = scienceService;
             _saveData = saveData;
+            _textInputGuard = new ApTextInputGuard(inputBlocker, inputService);
         }
 
         public void Load()
@@ -105,6 +110,12 @@ namespace ArchipelagoIntegration
             _disconnectButton = _root.Q<Button>("DisconnectButton");
             _connectionStatusLabel = _root.Q<Label>("ConnectionStatus");
 
+            // Typing in these fields must not trigger the game's hotkeys (#12)
+            _textInputGuard.Attach(_hostField);
+            _textInputGuard.Attach(_portField);
+            _textInputGuard.Attach(_slotField);
+            _textInputGuard.Attach(_passwordField);
+
             // Prefer the save's bound AP identity over PlayerPrefs. PlayerPrefs is
             // a per-Timberborn-process global, so loading a different save and
             // falling back to PlayerPrefs would surface the WRONG slot from a
@@ -157,6 +168,7 @@ namespace ArchipelagoIntegration
             ArchipelagoManager.OnItemReceived -= OnItemReceived;
             ArchipelagoManager.OnConnectionChanged -= OnConnectionChanged;
             _saveData.PendingGoods.Changed -= UpdatePendingGoodsLabel;
+            _textInputGuard.ReleaseAll();
         }
 
         /// <summary>Root of the game's UI tree (the shop is reparented there in Load).</summary>
@@ -170,6 +182,9 @@ namespace ArchipelagoIntegration
 
         public void Hide()
         {
+            // A hidden field keeps its focus; release it so the hotkeys come back (#12)
+            _textInputGuard.BlurWithin(_root);
+            _textInputGuard.ReleaseAll();
             _root.style.display = DisplayStyle.None;
         }
 
