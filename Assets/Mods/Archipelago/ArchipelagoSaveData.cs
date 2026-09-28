@@ -56,6 +56,7 @@ namespace ArchipelagoIntegration
         private static readonly PropertyKey<int> GoalAchievedKey = new("GoalAchieved");
         private static readonly PropertyKey<string> ActiveBoostsKey = new("ActiveBoosts");
         private static readonly PropertyKey<string> ScoutedPathsKey = new("ScoutedPaths");
+        private static readonly PropertyKey<string> HintedLocationsKey = new("HintedLocations");
         private static readonly PropertyKey<int> BaselineDroughtKey = new("BaselineDroughtCount");
         private static readonly PropertyKey<int> BaselineBadtideKey = new("BaselineBadtideCount");
         private static readonly PropertyKey<int> SurvivedDroughtsKey = new("SurvivedDroughts");
@@ -174,8 +175,15 @@ namespace ArchipelagoIntegration
         /// <summary>Active boost names, persisted so they survive save/load and re-apply on game start.</summary>
         public HashSet<string> ActiveBoosts { get; } = new();
 
-        /// <summary>Path letters that have been scouted (building names revealed).</summary>
+        /// <summary>Path letters that have been scouted (next slot's name revealed).</summary>
         public HashSet<string> ScoutedPaths { get; } = new();
+
+        /// <summary>
+        /// Shop location ids already hinted for scouted paths, so reconnects, reloads
+        /// and item replays never hint the same location again. Absent in saves from
+        /// before next-slot scouting; those start empty and hint only the next slot.
+        /// </summary>
+        public HashSet<long> HintedLocations { get; } = new();
 
         /// <summary>
         /// Maps shop location_id (as string) to the actual AP item name placed there.
@@ -378,6 +386,8 @@ namespace ArchipelagoIntegration
                     foreach (var p in raw.Split('|'))
                         ScoutedPaths.Add(p);
             }
+            if (loader.Has(HintedLocationsKey))
+                HintedLocations.UnionWith(ScoutHints.Deserialize(loader.Get(HintedLocationsKey)));
             if (loader.Has(ShopPlacementsKey))
             {
                 var raw = loader.Get(ShopPlacementsKey);
@@ -514,6 +524,9 @@ namespace ArchipelagoIntegration
             // Restore checked state from server (critical for fresh-save reconnects)
             RestoreCheckedStateFromServer();
 
+            // Hint scouted paths that advanced while disconnected
+            HintScoutedNextSlots();
+
             // Restore goal completion status from server
             if (!GoalAchieved && ArchipelagoManager.IsGoalCompleted())
             {
@@ -527,6 +540,24 @@ namespace ArchipelagoIntegration
                 Debug.Log("[Archipelago] Goal reached in this save but not on the server — sending it again");
                 ArchipelagoManager.SendGoalCompleted();
             }
+        }
+
+        /// <summary>
+        /// Hints the next unbought slot of every scouted path that was not hinted yet.
+        /// Called when a Scout item arrives, when a shop slot is bought or skipped, and
+        /// on connect (covers paths that advanced while offline). Does nothing while
+        /// disconnected; ids are marked hinted only once the request is sent.
+        /// </summary>
+        public void HintScoutedNextSlots()
+        {
+            if (!ArchipelagoManager.IsConnected || ShopLayout == null || ScoutedPaths.Count == 0) return;
+            var ids = ScoutHints.LocationsToHint(
+                ShopLayout.Select(s => (s.Path, s.Level, s.LocationId)),
+                ScoutedPaths, CheckedLocations, HintedLocations);
+            if (ids.Count == 0) return;
+            if (!ArchipelagoManager.BroadcastLocationHints(ids.ToArray())) return;
+            HintedLocations.UnionWith(ids);
+            Debug.Log($"[Archipelago] Scout hints requested for next slot(s): {string.Join(", ", ids)}");
         }
 
         /// <summary>
@@ -687,6 +718,8 @@ namespace ArchipelagoIntegration
                 saver.Set(ActiveBoostsKey, string.Join("|", ActiveBoosts));
             if (ScoutedPaths.Count > 0)
                 saver.Set(ScoutedPathsKey, string.Join("|", ScoutedPaths));
+            if (HintedLocations.Count > 0)
+                saver.Set(HintedLocationsKey, ScoutHints.Serialize(HintedLocations));
             if (ShopPlacements.Count > 0)
                 saver.Set(ShopPlacementsKey, SerializeShopPlacements(ShopPlacements));
             if (!PendingGoods.IsEmpty)

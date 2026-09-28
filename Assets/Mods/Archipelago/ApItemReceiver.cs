@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using Timberborn.Buildings;
 using Timberborn.ScienceSystem;
 using Timberborn.SingletonSystem;
@@ -77,7 +76,9 @@ namespace ArchipelagoIntegration
             // Track all received items for tier gate evaluation and save persistence
             _saveData.ReceivedItems.Add(item.ItemName);
 
-            // Handle Scout items — idempotent (set-based), safe to replay
+            // Handle Scout items — idempotent (set-based), safe to replay.
+            // A scouted path reveals and hints only its next unbought slot; the shop
+            // hints each following slot when the path advances to it.
             if (item.ItemName.StartsWith("Scout: Path "))
             {
                 var pathLetter = item.ItemName.Substring("Scout: Path ".Length);
@@ -87,20 +88,12 @@ namespace ArchipelagoIntegration
                 if (!item.IsReplay && !alreadyScouted)
                 {
                     Debug.Log($"[Archipelago] Path {pathLetter} scouted (from {item.SenderName})");
-                    ArchipelagoManager.PostLogMessage($"Path {pathLetter} scouted! Building names revealed.");
-
-                    // Broadcast hints for every location on this path so all players
-                    // in the multiworld see what items are at these locations.
-                    if (_saveData.ShopLayout != null)
-                    {
-                        var pathLocationIds = _saveData.ShopLayout
-                            .Where(slot => slot.Path == pathLetter)
-                            .Select(slot => slot.LocationId)
-                            .ToArray();
-                        if (pathLocationIds.Length > 0)
-                            ArchipelagoManager.BroadcastLocationHints(pathLocationIds);
-                    }
+                    ArchipelagoManager.PostLogMessage($"Path {pathLetter} scouted: next unlock revealed.");
                 }
+
+                // Hints at most one location per scouted path, each location once per
+                // save, so replays and repeats never announce the whole path.
+                _saveData.HintScoutedNextSlots();
                 return;
             }
 
