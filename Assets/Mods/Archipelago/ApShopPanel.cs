@@ -361,6 +361,7 @@ namespace ArchipelagoIntegration
             _scienceService.SubtractPoints(entry.Slot.Price);
             ArchipelagoManager.SendLocationCheck(entry.Slot.LocationId);
             _saveData.CheckedLocations.Add(entry.Slot.LocationId.ToString());
+            _saveData.HintScoutedNextSlots();
 
             Debug.Log($"[Archipelago] Shop buy: {entry.Path}-{entry.Index + 1} " +
                       $"(loc={entry.Slot.LocationId}, cost={entry.Slot.Price})");
@@ -377,6 +378,7 @@ namespace ArchipelagoIntegration
             _saveData.SkipsAvailable--;
             ArchipelagoManager.SendLocationCheck(entry.Slot.LocationId);
             _saveData.CheckedLocations.Add(entry.Slot.LocationId.ToString());
+            _saveData.HintScoutedNextSlots();
 
             Debug.Log($"[Archipelago] Shop skip: {entry.Path}-{entry.Index + 1} " +
                       $"(loc={entry.Slot.LocationId}, skips remaining={_saveData.SkipsAvailable})");

@@ -294,31 +294,35 @@ namespace ArchipelagoIntegration
 
         /// <summary>
         /// Broadcasts location hints to the server for the given location IDs.
-        /// Uses HintCreationPolicy.CreateAndAnnounce so all players in the multiworld
-        /// see what items are at those locations. Fire-and-forget; errors are logged.
-        /// Called when a Scout item is received to reveal a shop path's contents.
+        /// Uses HintCreationPolicy.CreateAndAnnounceOnce so all players in the multiworld
+        /// see what items are at those locations, and the server announces only hints
+        /// that did not exist yet. Fire-and-forget; errors are logged.
+        /// Called for the next slot of each scouted shop path (ArchipelagoSaveData.HintScoutedNextSlots).
+        /// Returns true when the request was sent.
         /// </summary>
-        public static void BroadcastLocationHints(long[] locationIds)
+        public static bool BroadcastLocationHints(long[] locationIds)
         {
-            if (!IsConnected || _session == null || locationIds.Length == 0) return;
+            if (!IsConnected || _session == null || locationIds.Length == 0) return false;
             try
             {
                 // ScoutLocationsAsync is async; we fire-and-forget from the main thread.
                 // The continuation only logs, so it's safe to discard the Task.
                 var task = _session.Locations.ScoutLocationsAsync(
-                    Archipelago.MultiClient.Net.Enums.HintCreationPolicy.CreateAndAnnounce,
+                    Archipelago.MultiClient.Net.Enums.HintCreationPolicy.CreateAndAnnounceOnce,
                     locationIds);
                 task.ContinueWith(t =>
                 {
                     if (t.IsFaulted)
                         Debug.LogWarning($"[Archipelago] BroadcastLocationHints failed: {t.Exception?.InnerException?.Message}");
                     else
-                        Debug.Log($"[Archipelago] Broadcasted hints for {locationIds.Length} location(s)");
+                        Debug.Log($"[Archipelago] Broadcasted hints for {locationIds.Length} location(s): {string.Join(", ", locationIds)}");
                 });
+                return true;
             }
             catch (Exception ex)
             {
                 Debug.LogWarning($"[Archipelago] BroadcastLocationHints threw: {ex.Message}");
+                return false;
             }
         }
 
