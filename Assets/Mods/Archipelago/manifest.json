@@ -1,8 +1,8 @@
 {
   "Name": "Archipelago Multiworld",
-  "Version": "0.0.6.0",
+  "Version": "0.1.0.0",
   "Id": "ArchipelagoMW.Timberborn",
   "MinimumGameVersion": "1.1.0.0",
-  "Description": "Connects Timberborn to the Archipelago Multiworld Randomizer. Building blueprints normally unlocked through Science are shuffled across a multiworld - survive on whatever tech arrives while sending checks to unlock buildings for other players.\n\nSupports both Folktails and Iron Teeth factions. Requires an Archipelago server running the Timberborn APWorld.",
+  "Description": "Connects Timberborn 1.1 to the Archipelago Multiworld Randomizer. Building blueprints normally unlocked through Science are shuffled across a multiworld, so you survive on whatever tech arrives while sending checks that unlock buildings for other players. By default you start with the Forester, Stairs and Platform blueprints.\n\nSupports both Folktails and Iron Teeth factions. Requires Timberborn 1.1 and an Archipelago server running the Timberborn APWorld.",
   "RequiredMods": []
 }
