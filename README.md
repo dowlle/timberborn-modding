@@ -22,14 +22,11 @@ and production chains unique to each.
 
 ## Status
 
-**Pre-alpha, and playable.** The latest release is
-[v0.0.5.2](https://github.com/dowlle/timberborn-modding/releases). It runs, it
-has been played through to a goal in a live async multiworld, and it still has
-rough edges, which is what the
+**Playable, and looking for testers.** The latest release is
+[v0.1.0](https://github.com/dowlle/timberborn-modding/releases), the Timberborn
+1.1 update. It needs **Timberborn 1.1** (stable) and won't load on 1.0. It still
+has rough edges, which is what the
 [issue tracker](https://github.com/dowlle/timberborn-modding/issues) is for.
-
-The next release is **v0.1.0**, targeting **Timberborn 1.1**, and it lands after
-1.1 leaves the experimental branch.
 
 ## Installing
 
